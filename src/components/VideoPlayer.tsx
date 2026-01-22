@@ -129,7 +129,7 @@ export const VideoPlayer = ({
               <Play className="w-8 h-8 text-primary ml-1" />
             </div>
             <p className="text-muted-foreground">
-              {isHost ? 'Search for a song to start the party' : 'Waiting for host to select a song...'}
+              {isHost ? 'Paste a YouTube link to start the party' : 'Waiting for host to select a video...'}
             </p>
           </div>
         </div>
