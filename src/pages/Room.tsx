@@ -5,11 +5,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 
 import { VideoPlayer } from '@/components/VideoPlayer';
-import { YouTubeSearch } from '@/components/YouTubeSearch';
+import { YouTubeLinkInput } from '@/components/YouTubeLinkInput';
 import { SyncButton } from '@/components/SyncButton';
 import { DeviceCounter } from '@/components/DeviceCounter';
 import { useSyncEngine } from '@/hooks/useSyncEngine';
-import { YouTubeSearchResult, PresenceState } from '@/types/room';
+import { PresenceState } from '@/types/room';
 
 const Room = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -68,11 +68,15 @@ const Room = () => {
     playerControlsRef.current = controls;
   }, []);
 
-  const handleVideoSelect = useCallback((video: YouTubeSearchResult) => {
-    setVideoId(video.videoId);
-    setVideoTitle(video.title);
-    setVideoThumbnail(video.thumbnail);
-    broadcastVideoChange(video.videoId, video.title, video.thumbnail);
+  const handleVideoSelect = useCallback((videoId: string, title: string, thumbnail: string) => {
+    setVideoId(videoId);
+    setVideoTitle(title);
+    setVideoThumbnail(thumbnail);
+    broadcastVideoChange(videoId, title, thumbnail);
+    // Auto-load and play for host
+    if (playerControlsRef.current) {
+      playerControlsRef.current.loadVideo(videoId);
+    }
   }, [broadcastVideoChange]);
 
   const handlePlay = useCallback(() => {
@@ -212,7 +216,7 @@ const Room = () => {
             transition={{ delay: 0.3 }}
             className="mb-6"
           >
-            <YouTubeSearch onVideoSelect={handleVideoSelect} />
+            <YouTubeLinkInput onVideoSelect={handleVideoSelect} />
           </motion.div>
         )}
 
@@ -238,7 +242,7 @@ const Room = () => {
             className="text-center py-8"
           >
             <p className="text-muted-foreground">
-              Search for a song above to start the party.
+              Paste a YouTube link above to start the party.
               <br />
               Share the room code with friends to join!
             </p>
@@ -255,7 +259,7 @@ const Room = () => {
             <div className="inline-flex items-center gap-3 px-6 py-4 rounded-xl glass">
               <div className="w-3 h-3 rounded-full bg-primary animate-pulse" />
               <span className="text-muted-foreground">
-                Waiting for host to select a song...
+                Waiting for host to select a video...
               </span>
             </div>
           </motion.div>
