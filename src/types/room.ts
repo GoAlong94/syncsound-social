@@ -19,11 +19,18 @@ export interface SyncMessage {
   senderId?: string;
 }
 
+export type SyncStatus = 'synced' | 'syncing' | 'unsynced' | 'error';
+
 export interface PresenceState {
   id: string;
   isHost: boolean;
   joinedAt: number;
   ping?: number;
+  os: string;
+  browser: string;
+  syncStatus: SyncStatus;
+  latency: number;
+  lastSyncDelta: number;
 }
 
 export interface YouTubeSearchResult {

@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Copy, Check, Crown, Share2 } from 'lucide-react';
+import { ArrowLeft, Copy, Check, Crown, Share2, SkipBack, SkipForward } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 
@@ -8,8 +8,12 @@ import { VideoPlayer } from '@/components/VideoPlayer';
 import { YouTubeLinkInput } from '@/components/YouTubeLinkInput';
 import { SyncButton } from '@/components/SyncButton';
 import { DeviceCounter } from '@/components/DeviceCounter';
+import { VideoQueue } from '@/components/VideoQueue';
+import { DeviceDashboard } from '@/components/DeviceDashboard';
+import { JoinerStatusCard } from '@/components/JoinerStatusCard';
 import { useSyncEngine } from '@/hooks/useSyncEngine';
-import { PresenceState } from '@/types/room';
+import { useVideoQueue } from '@/hooks/useVideoQueue';
+import { Button } from '@/components/ui/button';
 
 const Room = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -42,15 +46,28 @@ const Room = () => {
     setVideoThumbnail(thumbnail);
     if (playerControlsRef.current) {
       playerControlsRef.current.loadVideo(newVideoId);
+      // Auto-play for already synced joiners
+      if (isSynced && !isHost) {
+        setTimeout(() => {
+          playerControlsRef.current?.play();
+        }, 1000);
+      }
     }
-  }, []);
+  }, [isSynced, isHost]);
 
   const {
     connectedDevices,
     latency,
+    syncStatus,
+    lastSyncDelta,
     broadcastPlay,
     broadcastPause,
     broadcastVideoChange,
+    broadcastQueueUpdate,
+    forceResync,
+    manualResync,
+    measureLatency,
+    deviceInfo,
   } = useSyncEngine({
     roomId: roomId || '',
     isHost,
@@ -62,6 +79,37 @@ const Room = () => {
     pause: () => playerControlsRef.current?.pause(),
     getPlayerState: () => playerControlsRef.current?.getPlayerState() || -1,
     onVideoChange: handleVideoChange,
+    onQueueUpdate: (queue) => {
+      // Sync queue for joiners
+      syncQueue(queue);
+    },
+  });
+
+  const {
+    queue,
+    addToQueue,
+    removeFromQueue,
+    playNext,
+    playPrevious,
+    playAtIndex,
+    syncQueue,
+    moveItem,
+    hasNext,
+    hasPrevious,
+    isQueueFull,
+  } = useVideoQueue({
+    onVideoChange: (vid, title, thumb) => {
+      setVideoId(vid);
+      setVideoTitle(title);
+      setVideoThumbnail(thumb);
+      if (playerControlsRef.current) {
+        playerControlsRef.current.loadVideo(vid);
+      }
+      if (isHost) {
+        broadcastVideoChange(vid, title, thumb);
+      }
+    },
+    broadcastQueueUpdate: isHost ? broadcastQueueUpdate : undefined,
   });
 
   const handlePlayerReady = useCallback((controls: typeof playerControlsRef.current) => {
@@ -69,15 +117,10 @@ const Room = () => {
   }, []);
 
   const handleVideoSelect = useCallback((videoId: string, title: string, thumbnail: string) => {
-    setVideoId(videoId);
-    setVideoTitle(title);
-    setVideoThumbnail(thumbnail);
-    broadcastVideoChange(videoId, title, thumbnail);
-    // Auto-load and play for host
-    if (playerControlsRef.current) {
-      playerControlsRef.current.loadVideo(videoId);
+    if (isHost) {
+      addToQueue(videoId, title, thumbnail);
     }
-  }, [broadcastVideoChange]);
+  }, [isHost, addToQueue]);
 
   const handlePlay = useCallback(() => {
     setIsPlaying(true);
@@ -98,9 +141,17 @@ const Room = () => {
       playerControlsRef.current.play();
       playerControlsRef.current.unmute();
       setIsSynced(true);
+      manualResync();
       toast.success('Audio synced and unmuted!');
     }
-  }, []);
+  }, [manualResync]);
+
+  // Handle video end - advance queue
+  const handleVideoEnd = useCallback(() => {
+    if (isHost && hasNext) {
+      playNext();
+    }
+  }, [isHost, hasNext, playNext]);
 
   const copyRoomCode = async () => {
     if (roomId) {
@@ -187,83 +238,176 @@ const Room = () => {
       </motion.div>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full">
-        {/* Video Player */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.2 }}
-          className="mb-6"
-        >
-          <VideoPlayer
-            videoId={videoId}
-            videoTitle={videoTitle}
-            videoThumbnail={videoThumbnail}
-            isHost={isHost}
-            isPlaying={isPlaying}
-            isSynced={isSynced}
-            onPlay={handlePlay}
-            onPause={handlePause}
-            onPlayerReady={handlePlayerReady}
-          />
-        </motion.div>
-
-        {/* Host: Search Bar */}
-        {isHost && (
+      <div className="flex-1 flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto w-full">
+        {/* Left Column: Video + Controls */}
+        <div className="flex-1 flex flex-col">
+          {/* Video Player */}
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="mb-6"
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.2 }}
+            className="mb-4"
           >
-            <YouTubeLinkInput onVideoSelect={handleVideoSelect} />
+            <VideoPlayer
+              videoId={videoId}
+              videoTitle={videoTitle}
+              videoThumbnail={videoThumbnail}
+              isHost={isHost}
+              isPlaying={isPlaying}
+              isSynced={isSynced}
+              onPlay={handlePlay}
+              onPause={handlePause}
+              onPlayerReady={handlePlayerReady}
+            />
           </motion.div>
-        )}
 
-        {/* Joiner: Sync Button */}
-        <AnimatePresence>
-          {!isHost && videoId && (
+          {/* Host: Queue Controls */}
+          {isHost && videoId && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex items-center justify-center gap-4 mb-4"
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={playPrevious}
+                disabled={!hasPrevious}
+              >
+                <SkipBack className="w-4 h-4 mr-1" />
+                Previous
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={playNext}
+                disabled={!hasNext}
+              >
+                Next
+                <SkipForward className="w-4 h-4 ml-1" />
+              </Button>
+            </motion.div>
+          )}
+
+          {/* Host: Search Bar */}
+          {isHost && (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="mt-auto py-8"
+              transition={{ delay: 0.3 }}
+              className="mb-4"
             >
-              <SyncButton onSync={handleSync} isSynced={isSynced} />
+              <YouTubeLinkInput 
+                onVideoSelect={handleVideoSelect}
+                disabled={isQueueFull}
+              />
+              {isQueueFull && (
+                <p className="text-xs text-sync-warning mt-2 text-center">
+                  Queue is full (max 10 videos)
+                </p>
+              )}
             </motion.div>
           )}
-        </AnimatePresence>
 
-        {/* Host Instructions */}
-        {isHost && !videoId && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-center py-8"
-          >
-            <p className="text-muted-foreground">
-              Paste a YouTube link above to start the party.
-              <br />
-              Share the room code with friends to join!
-            </p>
-          </motion.div>
-        )}
+          {/* Joiner: Sync Button */}
+          <AnimatePresence>
+            {!isHost && videoId && !isSynced && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                className="py-4"
+              >
+                <SyncButton onSync={handleSync} isSynced={isSynced} />
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-        {/* Joiner Waiting */}
-        {!isHost && !videoId && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-center py-8"
-          >
-            <div className="inline-flex items-center gap-3 px-6 py-4 rounded-xl glass">
-              <div className="w-3 h-3 rounded-full bg-primary animate-pulse" />
-              <span className="text-muted-foreground">
-                Waiting for host to select a video...
-              </span>
-            </div>
-          </motion.div>
-        )}
+          {/* Host Instructions */}
+          {isHost && !videoId && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="text-center py-8"
+            >
+              <p className="text-muted-foreground">
+                Paste a YouTube link above to start the party.
+                <br />
+                Share the room code with friends to join!
+              </p>
+            </motion.div>
+          )}
+
+          {/* Joiner Waiting */}
+          {!isHost && !videoId && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="text-center py-8"
+            >
+              <div className="inline-flex items-center gap-3 px-6 py-4 rounded-xl glass">
+                <div className="w-3 h-3 rounded-full bg-primary animate-pulse" />
+                <span className="text-muted-foreground">
+                  Waiting for host to select a video...
+                </span>
+              </div>
+            </motion.div>
+          )}
+        </div>
+
+        {/* Right Column: Queue + Device Info */}
+        <div className="lg:w-80 space-y-4">
+          {/* Video Queue */}
+          {(queue.items.length > 0 || isHost) && (
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.4 }}
+            >
+              <VideoQueue
+                queue={queue}
+                onRemove={removeFromQueue}
+                onPlay={playAtIndex}
+                onMove={moveItem}
+                isHost={isHost}
+              />
+            </motion.div>
+          )}
+
+          {/* Host: Device Dashboard */}
+          {isHost && (
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.5 }}
+            >
+              <DeviceDashboard
+                devices={connectedDevices}
+                currentUserId={userId}
+                onForceResync={forceResync}
+                onRefreshPing={measureLatency}
+              />
+            </motion.div>
+          )}
+
+          {/* Joiner: Status Card */}
+          {!isHost && isSynced && (
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.5 }}
+            >
+              <JoinerStatusCard
+                os={deviceInfo.os}
+                browser={deviceInfo.browser}
+                latency={latency}
+                syncStatus={syncStatus}
+                lastSyncDelta={lastSyncDelta}
+                onResync={manualResync}
+              />
+            </motion.div>
+          )}
+        </div>
       </div>
     </div>
   );
