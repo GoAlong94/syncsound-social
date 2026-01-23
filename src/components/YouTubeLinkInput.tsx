@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 
 interface YouTubeLinkInputProps {
   onVideoSelect: (videoId: string, title: string, thumbnail: string) => void;
+  disabled?: boolean;
 }
 
 // Extract video ID from various YouTube URL formats
@@ -34,7 +35,7 @@ const extractVideoId = (url: string): string | null => {
   return null;
 };
 
-export const YouTubeLinkInput = ({ onVideoSelect }: YouTubeLinkInputProps) => {
+export const YouTubeLinkInput = ({ onVideoSelect, disabled = false }: YouTubeLinkInputProps) => {
   const [url, setUrl] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -119,14 +120,15 @@ export const YouTubeLinkInput = ({ onVideoSelect }: YouTubeLinkInputProps) => {
             }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            className="pl-12 pr-4 py-6 bg-secondary border-border rounded-xl text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-primary focus:border-transparent"
+            disabled={disabled}
+            className="pl-12 pr-4 py-6 bg-secondary border-border rounded-xl text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-primary focus:border-transparent disabled:opacity-50"
           />
         </div>
         <motion.button
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           onClick={handleSubmit}
-          disabled={isLoading}
+          disabled={isLoading || disabled}
           className="px-6 py-3 rounded-xl bg-primary text-primary-foreground font-medium hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-2"
         >
           {isLoading ? (
