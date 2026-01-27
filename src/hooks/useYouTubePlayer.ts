@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 
 declare global {
   interface Window {
@@ -7,158 +7,117 @@ declare global {
   }
 }
 
-export interface UseYouTubePlayerProps {
-  containerId: string;
-  onReady?: () => void;
-  onStateChange?: (state: number) => void;
-  onError?: (error: any) => void;
+interface UseYouTubePlayerProps {
+  videoId: string | null;
+  elementId: string;
+  onReady?: (event: any) => void;
+  onStateChange?: (event: any) => void;
+  playerVars?: any;
 }
 
 export const useYouTubePlayer = ({
-  containerId,
+  videoId,
+  elementId,
   onReady,
   onStateChange,
-  onError,
+  playerVars,
 }: UseYouTubePlayerProps) => {
-  const [player, setPlayer] = useState<any>(null);
-  const [isReady, setIsReady] = useState(false);
-  const [isApiLoaded, setIsApiLoaded] = useState(false);
   const playerRef = useRef<any>(null);
+  const [isReady, setIsReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Load YouTube IFrame API
+  // Load YouTube API script
   useEffect(() => {
-    if (window.YT && window.YT.Player) {
-      setIsApiLoaded(true);
-      return;
+    if (!window.YT) {
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      const firstScriptTag = document.getElementsByTagName('script')[0];
+      firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+
+      window.onYouTubeIframeAPIReady = () => {
+        setIsReady(true);
+      };
+    } else {
+      setIsReady(true);
     }
-
-    const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
-    if (existingScript) {
-      window.onYouTubeIframeAPIReady = () => setIsApiLoaded(true);
-      return;
-    }
-
-    const tag = document.createElement('script');
-    tag.src = 'https://www.youtube.com/iframe_api';
-    const firstScriptTag = document.getElementsByTagName('script')[0];
-    firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
-
-    window.onYouTubeIframeAPIReady = () => {
-      setIsApiLoaded(true);
-    };
   }, []);
 
-  // Initialize player when API is ready
+  // Initialize Player
   useEffect(() => {
-    if (!isApiLoaded || playerRef.current) return;
+    if (!isReady || !videoId || playerRef.current) return;
 
-    const container = document.getElementById(containerId);
-    if (!container) return;
-
-    playerRef.current = new window.YT.Player(containerId, {
-      height: '100%',
-      width: '100%',
-      playerVars: {
-        playsinline: 1,
-        autoplay: 0,
-        controls: 0,
-        rel: 0,
-        modestbranding: 1,
-        fs: 0,
-        iv_load_policy: 3,
-        disablekb: 1,
-      },
-      events: {
-        onReady: (event: any) => {
-          setPlayer(event.target);
-          setIsReady(true);
-          onReady?.();
+    try {
+      playerRef.current = new window.YT.Player(elementId, {
+        videoId,
+        // THE FIX IS HERE: 'origin' must match your domain
+        host: 'https://www.youtube.com',
+        playerVars: {
+          autoplay: 0,
+          controls: 0,
+          disablekb: 1,
+          fs: 0,
+          modestbranding: 1,
+          playsinline: 1,
+          rel: 0,
+          origin: window.location.origin, // <--- CRITICAL FIX
+          enablejsapi: 1,
+          ...playerVars,
         },
-        onStateChange: (event: any) => {
-          onStateChange?.(event.data);
+        events: {
+          onReady: (event: any) => {
+            onReady?.(event);
+          },
+          onStateChange: (event: any) => {
+            onStateChange?.(event);
+          },
+          onError: (event: any) => {
+            console.error('YouTube Player Error:', event.data);
+            setError('Video playback error');
+          }
         },
-        onError: (event: any) => {
-          onError?.(event.data);
-        },
-      },
-    });
+      });
+    } catch (err) {
+      console.error("Failed to init player", err);
+    }
 
     return () => {
-      if (playerRef.current?.destroy) {
-        playerRef.current.destroy();
-        playerRef.current = null;
-      }
+      // Cleanup is tricky with YouTube API, usually best to leave instance
+      // or destroy if really navigating away
     };
-  }, [isApiLoaded, containerId, onReady, onStateChange, onError]);
+  }, [isReady, elementId, onReady, onStateChange, playerVars]);
 
-  const loadVideo = useCallback((videoId: string) => {
-    if (player && isReady) {
-      player.loadVideoById(videoId);
+  // Handle Video ID changes
+  useEffect(() => {
+    if (playerRef.current && playerRef.current.loadVideoById && videoId) {
+      playerRef.current.loadVideoById({
+        videoId,
+        startSeconds: 0,
+      });
     }
-  }, [player, isReady]);
+  }, [videoId]);
 
-  const play = useCallback(() => {
-    if (player && isReady) {
-      player.playVideo();
-    }
-  }, [player, isReady]);
-
-  const pause = useCallback(() => {
-    if (player && isReady) {
-      player.pauseVideo();
-    }
-  }, [player, isReady]);
-
-  const seekTo = useCallback((seconds: number) => {
-    if (player && isReady) {
-      player.seekTo(seconds, true);
-    }
-  }, [player, isReady]);
-
-  const getCurrentTime = useCallback((): number => {
-    if (player && isReady) {
-      return player.getCurrentTime() || 0;
-    }
-    return 0;
-  }, [player, isReady]);
-
-  const setPlaybackRate = useCallback((rate: number) => {
-    if (player && isReady) {
-      player.setPlaybackRate(rate);
-    }
-  }, [player, isReady]);
-
-  const unmute = useCallback(() => {
-    if (player && isReady) {
-      player.unMute();
-      player.setVolume(100);
-    }
-  }, [player, isReady]);
-
-  const mute = useCallback(() => {
-    if (player && isReady) {
-      player.mute();
-    }
-  }, [player, isReady]);
-
-  const getPlayerState = useCallback((): number => {
-    if (player && isReady) {
-      return player.getPlayerState();
-    }
-    return -1;
-  }, [player, isReady]);
-
-  return {
-    player,
-    isReady,
-    loadVideo,
-    play,
-    pause,
-    seekTo,
-    getCurrentTime,
-    setPlaybackRate,
-    unmute,
-    mute,
-    getPlayerState,
+  // Expose controls
+  const controls = {
+    play: () => playerRef.current?.playVideo(),
+    pause: () => playerRef.current?.pauseVideo(),
+    seekTo: (seconds: number) => playerRef.current?.seekTo(seconds, true),
+    getCurrentTime: () => {
+      // Safety check: if player isn't ready, return 0 to prevent crashes
+      return playerRef.current && typeof playerRef.current.getCurrentTime === 'function' 
+        ? playerRef.current.getCurrentTime() 
+        : 0;
+    },
+    getPlayerState: () => {
+      return playerRef.current && typeof playerRef.current.getPlayerState === 'function'
+        ? playerRef.current.getPlayerState()
+        : -1;
+    },
+    setPlaybackRate: (rate: number) => playerRef.current?.setPlaybackRate(rate),
+    getDuration: () => playerRef.current?.getDuration() || 0,
+    loadVideo: (id: string) => playerRef.current?.loadVideoById(id),
+    unmute: () => playerRef.current?.unMute(),
+    mute: () => playerRef.current?.mute(),
   };
+
+  return { player: playerRef.current, ...controls, error };
 };
