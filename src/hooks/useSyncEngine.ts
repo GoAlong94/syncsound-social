@@ -38,7 +38,6 @@ export const useSyncEngine = ({
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('unsynced');
   const [lastSyncDelta, setLastSyncDelta] = useState<number>(0);
   
-  // REFS
   const latencyRef = useRef<number>(0);
   const clockOffsetRef = useRef<number>(0); 
   const currentVideoIdRef = useRef<string | null>(null);
@@ -46,8 +45,9 @@ export const useSyncEngine = ({
   const lastSyncTimeRef = useRef<number>(0);
   const deviceInfo = useRef(getDeviceInfo());
   
-  // MOBILE FIX 1: Lowest RTT tracking (The "Best Connection" Filter)
-  // On mobile, latency spikes are common. We only trust the Lowest RTT.
+  // FIX: The Cooldown Timer
+  const ignoreSyncUntilRef = useRef<number>(0);
+
   const minRttRef = useRef<number>(9999);
   const wakeLockRef = useRef<any>(null);
 
@@ -62,6 +62,11 @@ export const useSyncEngine = ({
     onQueueUpdate
   });
 
+  // Expose offset for debugging if needed
+  useEffect(() => {
+    (window as any)._debug_clock_offset = clockOffsetRef.current;
+  });
+
   useEffect(() => {
     handlersRef.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate };
   });
@@ -69,20 +74,18 @@ export const useSyncEngine = ({
   useEffect(() => { latencyRef.current = latency; }, [latency]);
   useEffect(() => { syncStatusRef.current = syncStatus; }, [syncStatus]);
 
-  // MOBILE FIX 2: Request Wake Lock
+  // Mobile Wake Lock
   useEffect(() => {
     const requestWakeLock = async () => {
       if ('wakeLock' in navigator && !wakeLockRef.current) {
         try {
           wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-          console.log('Wake Lock active!');
         } catch (err) {
           console.log('Wake Lock rejected:', err);
         }
       }
     };
     requestWakeLock();
-    // Re-request on visibility change (tabs drop wake lock when hidden)
     const handleVis = () => {
       if (document.visibilityState === 'visible') requestWakeLock();
     };
@@ -113,13 +116,19 @@ export const useSyncEngine = ({
     if (isHost) return;
     setSyncStatus('syncing');
     syncStatusRef.current = 'syncing';
-    // Reset MinRTT on manual resync to allow fresh calibration
     minRttRef.current = 9999; 
     requestSync();
     measureLatency();
   }, [isHost, requestSync, measureLatency]);
 
-  // --- MAIN EFFECT ---
+  // SAFE SEEK: The Magic Fix
+  const safeSeek = useCallback((time: number) => {
+    console.log(`[Sync] 🛑 HARD SEEK to ${time.toFixed(2)}s. Pausing checks for 2.5s.`);
+    handlersRef.current.seekTo(time);
+    // IGNORE all updates for 2500ms to let iPhone buffer
+    ignoreSyncUntilRef.current = Date.now() + 2500; 
+  }, []);
+
   useEffect(() => {
     console.log("[SyncEngine] Mobile Optimized Init..."); 
     
@@ -151,18 +160,20 @@ export const useSyncEngine = ({
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: SyncMessage & { videoId?: string } }) => {
       if (isHost) return;
 
+      // 1. CHECK COOLDOWN: If we are in "Wait Mode", ignore everything
+      if (Date.now() < ignoreSyncUntilRef.current) {
+        return;
+      }
+
       const localNow = Date.now();
       const hostNow = localNow + clockOffsetRef.current;
       
-      // MOBILE FIX 3: Hardware Offset
-      // Android/iOS often process audio slower. We subtract a buffer.
+      // Hardware Offsets
       let hardwareOffset = 0;
-      if (deviceInfo.current.os === 'iOS') hardwareOffset = 0.015; // 15ms
-      if (deviceInfo.current.os === 'Android') hardwareOffset = 0.040; // 40ms
+      if (deviceInfo.current.os === 'iOS') hardwareOffset = 0.015; 
+      if (deviceInfo.current.os === 'Android') hardwareOffset = 0.040; 
 
       const timeSinceBroadcast = Math.max(0, (hostNow - (payload.timestamp || 0))) / 1000;
-      
-      // Estimated Host Time adjusted for Hardware Latency
       const estimatedHostTime = (payload.currentTime || 0) + timeSinceBroadcast - hardwareOffset;
       const localTime = handlersRef.current.getCurrentTime();
       
@@ -180,21 +191,31 @@ export const useSyncEngine = ({
       let targetRate = 1;
       let newStatus: SyncStatus = 'synced';
 
-      // Aggressive catch-up for Mobile
-      if (absDrift < 0.05) { 
+      // --- MOBILE-TUNED THRESHOLDS ---
+      
+      // 1. Excellent (< 60ms)
+      if (absDrift < 0.06) { 
         targetRate = 1;
         newStatus = 'synced';
-      } else if (absDrift < 0.15) { 
-        // 50ms-150ms: Micro-correct
+      } 
+      // 2. Micro-Correction (60ms - 200ms)
+      else if (absDrift < 0.20) { 
+        // Gentle nudges (0.98x / 1.02x)
         targetRate = drift > 0 ? 1.02 : 0.98;
         newStatus = 'syncing';
-      } else if (absDrift < 0.8) { 
-        // 150ms-800ms: Strong correct
-        targetRate = drift > 0 ? 1.08 : 0.92;
+      } 
+      // 3. Fast-Catchup (200ms - 1500ms) -- INCREASED RANGE
+      // We use speed instead of seek for up to 1.5 seconds gap!
+      // This prevents the "Rubber Band" seek loop for medium lags.
+      else if (absDrift < 1.50) { 
+        // Aggressive speed (0.90x / 1.10x)
+        targetRate = drift > 0 ? 1.10 : 0.90;
         newStatus = 'syncing';
-      } else {
-        // > 800ms: Jump
-        handlersRef.current.seekTo(estimatedHostTime);
+      } 
+      // 4. Emergency Jump (> 1.5s)
+      // Only seek if we are WAY off.
+      else {
+        safeSeek(estimatedHostTime);
         targetRate = 1;
         newStatus = 'syncing';
       }
@@ -203,13 +224,11 @@ export const useSyncEngine = ({
       setSyncStatus(newStatus);
       syncStatusRef.current = newStatus;
 
-      // Force play/pause state
       const localState = handlersRef.current.getPlayerState();
       if (payload.isPlaying && localState !== 1) handlersRef.current.play();
       else if (!payload.isPlaying && localState === 1) handlersRef.current.pause();
     });
 
-    // ... (Force Sync, Video Change handlers - same as before) ...
     channel.on('broadcast', { event: 'force_sync' }, ({ payload }) => {
       if (isHost) return;
       const localNow = Date.now();
@@ -219,7 +238,7 @@ export const useSyncEngine = ({
       
       if (payload.videoId) currentVideoIdRef.current = payload.videoId;
       
-      handlersRef.current.seekTo(targetTime);
+      safeSeek(targetTime); // Use safe seek
       handlersRef.current.setPlaybackRate(1);
       payload.isPlaying ? handlersRef.current.play() : handlersRef.current.pause();
       setSyncStatus('syncing');
@@ -257,7 +276,7 @@ export const useSyncEngine = ({
             const hostNow = localNow + clockOffsetRef.current;
             const timeSinceBroadcast = Math.max(0, (hostNow - payload.timestamp)) / 1000;
             const targetTime = payload.startTime + timeSinceBroadcast;
-            handlersRef.current.seekTo(targetTime);
+            safeSeek(targetTime);
           }
         }, 1500);
         setSyncStatus('syncing');
@@ -265,7 +284,6 @@ export const useSyncEngine = ({
       }
     });
 
-    // PING/PONG logic
     channel.on('broadcast', { event: 'ping' }, ({ payload }) => {
       if (isHost && payload.senderId !== userId) {
         channel.send({
@@ -287,23 +305,18 @@ export const useSyncEngine = ({
         const rtt = now - payload.timestamp;
         const offset = payload.hostTime - payload.timestamp - (rtt / 2);
         
-        // MOBILE LOGIC: Only update if this is a "good" ping (Low RTT)
-        // If RTT is 300ms, it's garbage (jitter). If 50ms, it's gold.
-        
         let shouldUpdate = false;
-
-        // If this is our best RTT yet (or close to it), trust it 100%
         if (rtt <= minRttRef.current) {
           minRttRef.current = rtt;
-          clockOffsetRef.current = offset; // Snap directly to best sample
+          clockOffsetRef.current = offset; 
           shouldUpdate = true;
-          console.log(`[Clock] New Best RTT: ${rtt}ms. Offset updated to ${Math.round(offset)}ms`);
+          (window as any)._debug_clock_offset = offset; 
         } 
-        // If RTT is within 20% of our best, smooth it in
         else if (rtt < minRttRef.current * 1.2) {
           const prev = clockOffsetRef.current;
           clockOffsetRef.current = prev * 0.8 + offset * 0.2;
           shouldUpdate = true;
+          (window as any)._debug_clock_offset = clockOffsetRef.current; 
         }
         
         setLatency(rtt);
@@ -338,10 +351,9 @@ export const useSyncEngine = ({
         });
         
         if (!isHost) {
-          // Burst pings for initial clock sync
           let pings = 0;
           const interval = setInterval(() => {
-             if (pings++ < 8) { // More pings for mobile to find a "lucky" low-latency packet
+             if (pings++ < 8) {
                 const pingTime = Date.now();
                 channel.send({ type: 'broadcast', event: 'ping', payload: { timestamp: pingTime, senderId: userId } });
              } else {
@@ -370,7 +382,6 @@ export const useSyncEngine = ({
     };
   }, [roomId, userId, isHost]);
 
-  // Host Broadcast Loop
   useEffect(() => {
     if (!isHost || !channelRef.current) return;
     const interval = setInterval(() => {
@@ -394,7 +405,6 @@ export const useSyncEngine = ({
     return () => clearInterval(interval);
   }, [isHost]);
 
-  // ... (broadcast methods same as before)
   const broadcastPlay = useCallback(() => { channelRef.current?.send({ type: 'broadcast', event: 'play', payload: { type: 'play' } }); }, []);
   const broadcastPause = useCallback(() => { channelRef.current?.send({ type: 'broadcast', event: 'pause', payload: { type: 'pause' } }); }, []);
   const broadcastVideoChange = useCallback((videoId: string, title: string, thumbnail: string) => {
