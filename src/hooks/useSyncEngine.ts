@@ -45,10 +45,15 @@ export const useSyncEngine = ({
   const lastSyncTimeRef = useRef<number>(0);
   const deviceInfo = useRef(getDeviceInfo());
   
-  // FIX: The Cooldown Timer
+  // 🔥 CRITICAL MOBILE FIX 1: The "Cooldown" Timer
+  // Prevents the "Rubber Band" loop by ignoring updates while buffering
   const ignoreSyncUntilRef = useRef<number>(0);
 
+  // 🔥 CRITICAL MOBILE FIX 2: MinRTT Filter
+  // Ignores 4G/WiFi lag spikes
   const minRttRef = useRef<number>(9999);
+  
+  // 🔥 CRITICAL MOBILE FIX 3: Wake Lock
   const wakeLockRef = useRef<any>(null);
 
   const handlersRef = useRef({
@@ -62,7 +67,7 @@ export const useSyncEngine = ({
     onQueueUpdate
   });
 
-  // Expose offset for debugging if needed
+  // Expose offset for debugging
   useEffect(() => {
     (window as any)._debug_clock_offset = clockOffsetRef.current;
   });
@@ -74,7 +79,7 @@ export const useSyncEngine = ({
   useEffect(() => { latencyRef.current = latency; }, [latency]);
   useEffect(() => { syncStatusRef.current = syncStatus; }, [syncStatus]);
 
-  // Mobile Wake Lock
+  // Mobile Wake Lock Implementation
   useEffect(() => {
     const requestWakeLock = async () => {
       if ('wakeLock' in navigator && !wakeLockRef.current) {
@@ -121,11 +126,11 @@ export const useSyncEngine = ({
     measureLatency();
   }, [isHost, requestSync, measureLatency]);
 
-  // SAFE SEEK: The Magic Fix
+  // 🔥 CRITICAL MOBILE FIX 4: SafeSeek
+  // Pauses sync checks for 2.5 seconds after a jump
   const safeSeek = useCallback((time: number) => {
     console.log(`[Sync] 🛑 HARD SEEK to ${time.toFixed(2)}s. Pausing checks for 2.5s.`);
     handlersRef.current.seekTo(time);
-    // IGNORE all updates for 2500ms to let iPhone buffer
     ignoreSyncUntilRef.current = Date.now() + 2500; 
   }, []);
 
@@ -160,7 +165,7 @@ export const useSyncEngine = ({
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: SyncMessage & { videoId?: string } }) => {
       if (isHost) return;
 
-      // 1. CHECK COOLDOWN: If we are in "Wait Mode", ignore everything
+      // 1. CHECK COOLDOWN: If we just jumped, ignore everything!
       if (Date.now() < ignoreSyncUntilRef.current) {
         return;
       }
@@ -168,7 +173,7 @@ export const useSyncEngine = ({
       const localNow = Date.now();
       const hostNow = localNow + clockOffsetRef.current;
       
-      // Hardware Offsets
+      // 🔥 CRITICAL MOBILE FIX 5: Hardware Offsets
       let hardwareOffset = 0;
       if (deviceInfo.current.os === 'iOS') hardwareOffset = 0.015; 
       if (deviceInfo.current.os === 'Android') hardwareOffset = 0.040; 
@@ -200,20 +205,16 @@ export const useSyncEngine = ({
       } 
       // 2. Micro-Correction (60ms - 200ms)
       else if (absDrift < 0.20) { 
-        // Gentle nudges (0.98x / 1.02x)
         targetRate = drift > 0 ? 1.02 : 0.98;
         newStatus = 'syncing';
       } 
-      // 3. Fast-Catchup (200ms - 1500ms) -- INCREASED RANGE
-      // We use speed instead of seek for up to 1.5 seconds gap!
-      // This prevents the "Rubber Band" seek loop for medium lags.
+      // 3. Fast-Catchup (200ms - 1500ms)
+      // Use Speed instead of Jump for gaps up to 1.5 seconds!
       else if (absDrift < 1.50) { 
-        // Aggressive speed (0.90x / 1.10x)
         targetRate = drift > 0 ? 1.10 : 0.90;
         newStatus = 'syncing';
       } 
       // 4. Emergency Jump (> 1.5s)
-      // Only seek if we are WAY off.
       else {
         safeSeek(estimatedHostTime);
         targetRate = 1;
@@ -238,7 +239,7 @@ export const useSyncEngine = ({
       
       if (payload.videoId) currentVideoIdRef.current = payload.videoId;
       
-      safeSeek(targetTime); // Use safe seek
+      safeSeek(targetTime); 
       handlersRef.current.setPlaybackRate(1);
       payload.isPlaying ? handlersRef.current.play() : handlersRef.current.pause();
       setSyncStatus('syncing');
@@ -305,6 +306,8 @@ export const useSyncEngine = ({
         const rtt = now - payload.timestamp;
         const offset = payload.hostTime - payload.timestamp - (rtt / 2);
         
+        // 🔥 CRITICAL MOBILE FIX 6: MinRTT Filter
+        // Only trust low-latency pings
         let shouldUpdate = false;
         if (rtt <= minRttRef.current) {
           minRttRef.current = rtt;
@@ -382,6 +385,7 @@ export const useSyncEngine = ({
     };
   }, [roomId, userId, isHost]);
 
+  // Host Broadcast Loop
   useEffect(() => {
     if (!isHost || !channelRef.current) return;
     const interval = setInterval(() => {
