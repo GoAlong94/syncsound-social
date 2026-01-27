@@ -25,36 +25,28 @@ export const useYouTubePlayer = ({
   const [isApiLoaded, setIsApiLoaded] = useState(false);
   const playerRef = useRef<any>(null);
   
-  // QUEUE SYSTEM: If loadVideo is called before ready, remember it
+  // FIX: This remembers the video you tried to play before the player was ready
   const pendingVideoIdRef = useRef<string | null>(null);
 
-  // Load YouTube IFrame API
   useEffect(() => {
     if (window.YT && window.YT.Player) {
       setIsApiLoaded(true);
       return;
     }
-
     const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
     if (existingScript) {
       window.onYouTubeIframeAPIReady = () => setIsApiLoaded(true);
       return;
     }
-
     const tag = document.createElement('script');
     tag.src = 'https://www.youtube.com/iframe_api';
     const firstScriptTag = document.getElementsByTagName('script')[0];
     firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
-
-    window.onYouTubeIframeAPIReady = () => {
-      setIsApiLoaded(true);
-    };
+    window.onYouTubeIframeAPIReady = () => { setIsApiLoaded(true); };
   }, []);
 
-  // Initialize player when API is ready
   useEffect(() => {
     if (!isApiLoaded || playerRef.current) return;
-
     const container = document.getElementById(containerId);
     if (!container) return;
 
@@ -62,7 +54,7 @@ export const useYouTubePlayer = ({
       playerRef.current = new window.YT.Player(containerId, {
         height: '100%',
         width: '100%',
-        host: 'https://www.youtube.com', // Explicit host
+        host: 'https://www.youtube.com',
         playerVars: {
           playsinline: 1,
           autoplay: 0,
@@ -72,43 +64,34 @@ export const useYouTubePlayer = ({
           fs: 0,
           iv_load_policy: 3,
           disablekb: 1,
-          origin: window.location.origin, // FIX: Security Origin
+          origin: window.location.origin, // Fix for postMessage error
         },
         events: {
           onReady: (event: any) => {
             setPlayer(event.target);
             setIsReady(true);
             onReady?.();
-
-            // FIX: Play queued video immediately
+            
+            // FIX: Play the pending video immediately when ready
             if (pendingVideoIdRef.current) {
-              console.log("[YouTubeHook] Loading pending video:", pendingVideoIdRef.current);
+              console.log("[YouTubeHook] Loading queued video:", pendingVideoIdRef.current);
               event.target.loadVideoById(pendingVideoIdRef.current);
               pendingVideoIdRef.current = null;
             }
           },
-          onStateChange: (event: any) => {
-            onStateChange?.(event.data);
-          },
-          onError: (event: any) => {
-            onError?.(event.data);
-          },
+          onStateChange: (event: any) => { onStateChange?.(event.data); },
+          onError: (event: any) => { onError?.(event.data); },
         },
       });
-    } catch (e) {
-      console.error("YouTube Player Init Error", e);
-    }
-
-    return () => {
-      // Cleanup if needed
-    };
+    } catch (e) { console.error("YT Init Error", e); }
   }, [isApiLoaded, containerId, onReady, onStateChange, onError]);
 
   const loadVideo = useCallback((videoId: string) => {
     if (player && isReady) {
       player.loadVideoById(videoId);
     } else {
-      console.log("[YouTubeHook] Player not ready, queuing video:", videoId);
+      // If player not ready, queue it!
+      console.log("[YouTubeHook] Player not ready, queuing:", videoId);
       pendingVideoIdRef.current = videoId;
     }
   }, [player, isReady]);
