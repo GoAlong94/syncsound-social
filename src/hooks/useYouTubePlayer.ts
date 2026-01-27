@@ -25,7 +25,7 @@ export const useYouTubePlayer = ({
   const [isApiLoaded, setIsApiLoaded] = useState(false);
   const playerRef = useRef<any>(null);
   
-  // FIX 1: Remember the video we wanted to play if player wasn't ready yet
+  // QUEUE SYSTEM: If loadVideo is called before ready, remember it
   const pendingVideoIdRef = useRef<string | null>(null);
 
   // Load YouTube IFrame API
@@ -58,46 +58,49 @@ export const useYouTubePlayer = ({
     const container = document.getElementById(containerId);
     if (!container) return;
 
-    playerRef.current = new window.YT.Player(containerId, {
-      height: '100%',
-      width: '100%',
-      // FIX 2: Add 'host' parameter
-      host: 'https://www.youtube.com', 
-      playerVars: {
-        playsinline: 1,
-        autoplay: 0, // We handle autoplay manually to avoid race conditions
-        controls: 0,
-        rel: 0,
-        modestbranding: 1,
-        fs: 0,
-        iv_load_policy: 3,
-        disablekb: 1,
-        // FIX 3: Add 'origin' to fix postMessage security error
-        origin: window.location.origin, 
-      },
-      events: {
-        onReady: (event: any) => {
-          setPlayer(event.target);
-          setIsReady(true);
-          onReady?.();
-          
-          // FIX 4: Play the pending video if one was queued while loading
-          if (pendingVideoIdRef.current) {
-            event.target.loadVideoById(pendingVideoIdRef.current);
-            pendingVideoIdRef.current = null;
-          }
+    try {
+      playerRef.current = new window.YT.Player(containerId, {
+        height: '100%',
+        width: '100%',
+        host: 'https://www.youtube.com', // Explicit host
+        playerVars: {
+          playsinline: 1,
+          autoplay: 0,
+          controls: 0,
+          rel: 0,
+          modestbranding: 1,
+          fs: 0,
+          iv_load_policy: 3,
+          disablekb: 1,
+          origin: window.location.origin, // FIX: Security Origin
         },
-        onStateChange: (event: any) => {
-          onStateChange?.(event.data);
+        events: {
+          onReady: (event: any) => {
+            setPlayer(event.target);
+            setIsReady(true);
+            onReady?.();
+
+            // FIX: Play queued video immediately
+            if (pendingVideoIdRef.current) {
+              console.log("[YouTubeHook] Loading pending video:", pendingVideoIdRef.current);
+              event.target.loadVideoById(pendingVideoIdRef.current);
+              pendingVideoIdRef.current = null;
+            }
+          },
+          onStateChange: (event: any) => {
+            onStateChange?.(event.data);
+          },
+          onError: (event: any) => {
+            onError?.(event.data);
+          },
         },
-        onError: (event: any) => {
-          onError?.(event.data);
-        },
-      },
-    });
+      });
+    } catch (e) {
+      console.error("YouTube Player Init Error", e);
+    }
 
     return () => {
-      // Cleanup logic if needed (usually safe to leave YT instance)
+      // Cleanup if needed
     };
   }, [isApiLoaded, containerId, onReady, onStateChange, onError]);
 
@@ -105,61 +108,19 @@ export const useYouTubePlayer = ({
     if (player && isReady) {
       player.loadVideoById(videoId);
     } else {
-      // If player isn't ready, queue this video to play immediately when ready
+      console.log("[YouTubeHook] Player not ready, queuing video:", videoId);
       pendingVideoIdRef.current = videoId;
     }
   }, [player, isReady]);
 
-  const play = useCallback(() => {
-    if (player && isReady) {
-      player.playVideo();
-    }
-  }, [player, isReady]);
-
-  const pause = useCallback(() => {
-    if (player && isReady) {
-      player.pauseVideo();
-    }
-  }, [player, isReady]);
-
-  const seekTo = useCallback((seconds: number) => {
-    if (player && isReady) {
-      player.seekTo(seconds, true);
-    }
-  }, [player, isReady]);
-
-  const getCurrentTime = useCallback((): number => {
-    if (player && isReady && typeof player.getCurrentTime === 'function') {
-      return player.getCurrentTime();
-    }
-    return 0;
-  }, [player, isReady]);
-
-  const setPlaybackRate = useCallback((rate: number) => {
-    if (player && isReady) {
-      player.setPlaybackRate(rate);
-    }
-  }, [player, isReady]);
-
-  const unmute = useCallback(() => {
-    if (player && isReady) {
-      player.unMute();
-      player.setVolume(100);
-    }
-  }, [player, isReady]);
-
-  const mute = useCallback(() => {
-    if (player && isReady) {
-      player.mute();
-    }
-  }, [player, isReady]);
-
-  const getPlayerState = useCallback((): number => {
-    if (player && isReady && typeof player.getPlayerState === 'function') {
-      return player.getPlayerState();
-    }
-    return -1;
-  }, [player, isReady]);
+  const play = useCallback(() => { if (player && isReady) player.playVideo(); }, [player, isReady]);
+  const pause = useCallback(() => { if (player && isReady) player.pauseVideo(); }, [player, isReady]);
+  const seekTo = useCallback((seconds: number) => { if (player && isReady) player.seekTo(seconds, true); }, [player, isReady]);
+  const getCurrentTime = useCallback((): number => { return (player && isReady && player.getCurrentTime) ? player.getCurrentTime() : 0; }, [player, isReady]);
+  const setPlaybackRate = useCallback((rate: number) => { if (player && isReady) player.setPlaybackRate(rate); }, [player, isReady]);
+  const unmute = useCallback(() => { if (player && isReady) { player.unMute(); player.setVolume(100); } }, [player, isReady]);
+  const mute = useCallback(() => { if (player && isReady) player.mute(); }, [player, isReady]);
+  const getPlayerState = useCallback((): number => { return (player && isReady) ? player.getPlayerState() : -1; }, [player, isReady]);
 
   return {
     player,
