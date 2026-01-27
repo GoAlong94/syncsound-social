@@ -38,7 +38,7 @@ export const useSyncEngine = ({
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('unsynced');
   const [lastSyncDelta, setLastSyncDelta] = useState<number>(0);
   
-  // STATE REFS (These prevent the useEffect from breaking when state changes)
+  // STATE REFS
   const latencyRef = useRef<number>(0);
   const clockOffsetRef = useRef<number>(0); 
   const currentVideoIdRef = useRef<string | null>(null);
@@ -46,7 +46,7 @@ export const useSyncEngine = ({
   const lastSyncTimeRef = useRef<number>(0);
   const deviceInfo = useRef(getDeviceInfo());
 
-  // HANDLER REF (The Magic Fix: Access latest functions without breaking dependencies)
+  // HANDLER REF
   const handlersRef = useRef({
     getCurrentTime,
     seekTo,
@@ -58,7 +58,6 @@ export const useSyncEngine = ({
     onQueueUpdate
   });
 
-  // Keep handlers up to date on every render
   useEffect(() => {
     handlersRef.current = {
       getCurrentTime,
@@ -72,7 +71,6 @@ export const useSyncEngine = ({
     };
   });
 
-  // Keep state refs in sync
   useEffect(() => {
     latencyRef.current = latency;
   }, [latency]);
@@ -81,7 +79,6 @@ export const useSyncEngine = ({
     syncStatusRef.current = syncStatus;
   }, [syncStatus]);
 
-  // Measure latency via ping/pong
   const measureLatency = useCallback(() => {
     if (!channelRef.current) return;
     const pingTime = Date.now();
@@ -109,9 +106,9 @@ export const useSyncEngine = ({
     measureLatency();
   }, [isHost, requestSync, measureLatency]);
 
-  // --- MAIN EFFECT: ONE-TIME SETUP ---
+  // --- MAIN EFFECT ---
   useEffect(() => {
-    console.log("Initializing Sync Engine..."); 
+    console.log("[SyncEngine] Initializing..."); 
     
     const channel = supabase.channel(`room:${roomId}`, {
       config: {
@@ -138,14 +135,19 @@ export const useSyncEngine = ({
       setConnectedDevices(devices);
     });
 
-    // SYNC HANDLER
+    // SYNC HANDLER (The Critical Part)
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: SyncMessage & { videoId?: string } }) => {
       if (isHost) return;
 
+      // 1. Calculate Absolute Host Time
       const localNow = Date.now();
       const hostNow = localNow + clockOffsetRef.current;
+      
+      // 2. Calculate Travel Time
+      // How long ago (in Host Time) was this message sent?
       const timeSinceBroadcast = Math.max(0, (hostNow - (payload.timestamp || 0))) / 1000;
       
+      // 3. Estimate where Host is RIGHT NOW
       const estimatedHostTime = (payload.currentTime || 0) + timeSinceBroadcast;
       const localTime = handlersRef.current.getCurrentTime();
       
@@ -155,6 +157,9 @@ export const useSyncEngine = ({
 
       setLastSyncDelta(diffMs);
 
+      // DEBUG LOGGING
+      console.log(`[Sync] Drift: ${diffMs}ms | HostTime: ${estimatedHostTime.toFixed(3)} | LocalTime: ${localTime.toFixed(3)} | Offset: ${Math.round(clockOffsetRef.current)}ms`);
+
       if (payload.videoId && payload.videoId !== currentVideoIdRef.current) {
         requestSync();
         return;
@@ -163,20 +168,22 @@ export const useSyncEngine = ({
       let targetRate = 1;
       let newStatus: SyncStatus = 'synced';
 
-      // Tolerances
-      if (absDrift < 0.045) { // 45ms tolerance
+      // --- NEW AGGRESSIVE THRESHOLDS ---
+      if (absDrift < 0.045) { // 45ms: Perfect
         targetRate = 1;
         newStatus = 'synced';
-      } else if (absDrift < 0.1) {
+      } else if (absDrift < 0.1) { // 45ms - 100ms: Micro adjustment
         targetRate = drift > 0 ? 1.02 : 0.98;
         newStatus = 'syncing';
-      } else if (absDrift < 0.5) {
-        targetRate = drift > 0 ? 1.05 : 0.95;
-        newStatus = 'syncing';
-      } else if (absDrift < 2) {
-        targetRate = drift > 0 ? 1.10 : 0.90;
+      } else if (absDrift < 0.6) { // 100ms - 600ms: Strong adjustment
+        // If we are +700ms ahead (drift is negative), we need 0.90 speed
+        // If we are -700ms behind (drift is positive), we need 1.10 speed
+        targetRate = drift > 0 ? 1.08 : 0.92;
         newStatus = 'syncing';
       } else {
+        // > 600ms: JUMP (Snap to position)
+        // This fixes the "700ms lag" issue by forcing a seek
+        console.log(`[Sync] Large drift detected (${diffMs}ms). Seeking to ${estimatedHostTime}`);
         handlersRef.current.seekTo(estimatedHostTime);
         targetRate = 1;
         newStatus = 'syncing';
@@ -192,12 +199,11 @@ export const useSyncEngine = ({
       } else if (!payload.isPlaying && localState === 1) {
         handlersRef.current.pause();
       }
-      
-      // We do NOT update presence on every sync pulse to avoid flooding
     });
 
     channel.on('broadcast', { event: 'force_sync' }, ({ payload }) => {
       if (isHost) return;
+      console.log("[Sync] Force Sync received");
       const localNow = Date.now();
       const hostNow = localNow + clockOffsetRef.current;
       const timeSinceBroadcast = Math.max(0, (hostNow - (payload.timestamp || 0))) / 1000;
@@ -217,7 +223,6 @@ export const useSyncEngine = ({
       if (!isHost) return;
       const currentTime = handlersRef.current.getCurrentTime();
       const playerState = handlersRef.current.getPlayerState();
-      
       channel.send({
         type: 'broadcast',
         event: 'sync',
@@ -260,7 +265,6 @@ export const useSyncEngine = ({
       }
     });
 
-    // PING HANDLER (Host side)
     channel.on('broadcast', { event: 'ping' }, ({ payload }) => {
       if (isHost && payload.senderId !== userId) {
         channel.send({
@@ -276,20 +280,22 @@ export const useSyncEngine = ({
       }
     });
 
-    // PONG HANDLER (Joiner side)
     channel.on('broadcast', { event: 'pong' }, ({ payload }) => {
       if (!isHost && payload.targetId === userId) {
         const now = Date.now();
         const rtt = now - payload.timestamp;
         const offset = payload.hostTime - payload.timestamp - (rtt / 2);
         
+        // LOGGING CLOCK SYNC
+        console.log(`[ClockSync] RTT: ${rtt}ms | Computed Offset: ${offset}ms`);
+
         const prev = clockOffsetRef.current;
+        // Faster convergence on startup (if offset is 0, take new value immediately)
         clockOffsetRef.current = prev === 0 ? offset : (prev * 0.8 + offset * 0.2);
         
         setLatency(rtt);
         latencyRef.current = rtt;
         
-        // Update presence less frequently to avoid jitter
         channel.track({
           id: userId,
           isHost,
@@ -347,12 +353,10 @@ export const useSyncEngine = ({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       channel.unsubscribe();
     };
-  }, [roomId, userId, isHost]); // <--- CRITICAL: Minimal dependencies
+  }, [roomId, userId, isHost]);
 
-  // Host Broadcast Loop
   useEffect(() => {
     if (!isHost || !channelRef.current) return;
-
     const interval = setInterval(() => {
       const currentTime = handlersRef.current.getCurrentTime();
       const playerState = handlersRef.current.getPlayerState();
@@ -372,16 +376,14 @@ export const useSyncEngine = ({
         lastSyncTimeRef.current = currentTime;
       }
     }, 500);
-
     return () => clearInterval(interval);
   }, [isHost]);
 
-  // Public Methods
+  // Methods
   const forceResync = useCallback(() => {
     if (!channelRef.current || !isHost) return;
     const currentTime = handlersRef.current.getCurrentTime();
     const playerState = handlersRef.current.getPlayerState();
-    
     channelRef.current.send({
       type: 'broadcast',
       event: 'force_sync',
@@ -394,18 +396,11 @@ export const useSyncEngine = ({
     });
   }, [isHost]);
 
-  const broadcastPlay = useCallback(() => {
-    channelRef.current?.send({ type: 'broadcast', event: 'play', payload: { type: 'play' } });
-  }, []);
-
-  const broadcastPause = useCallback(() => {
-    channelRef.current?.send({ type: 'broadcast', event: 'pause', payload: { type: 'pause' } });
-  }, []);
-
+  const broadcastPlay = useCallback(() => { channelRef.current?.send({ type: 'broadcast', event: 'play', payload: { type: 'play' } }); }, []);
+  const broadcastPause = useCallback(() => { channelRef.current?.send({ type: 'broadcast', event: 'pause', payload: { type: 'pause' } }); }, []);
   const broadcastVideoChange = useCallback((videoId: string, title: string, thumbnail: string) => {
     currentVideoIdRef.current = videoId;
     const currentTime = handlersRef.current.getCurrentTime();
-    
     channelRef.current?.send({
       type: 'broadcast',
       event: 'video_change',
@@ -419,14 +414,8 @@ export const useSyncEngine = ({
       },
     });
   }, []);
-
-  const broadcastQueueUpdate = useCallback((queue: QueueState) => {
-    channelRef.current?.send({ type: 'broadcast', event: 'queue_update', payload: queue });
-  }, []);
-
-  const setCurrentVideoId = useCallback((videoId: string) => {
-    currentVideoIdRef.current = videoId;
-  }, []);
+  const broadcastQueueUpdate = useCallback((queue: QueueState) => { channelRef.current?.send({ type: 'broadcast', event: 'queue_update', payload: queue }); }, []);
+  const setCurrentVideoId = useCallback((videoId: string) => { currentVideoIdRef.current = videoId; }, []);
 
   return {
     connectedDevices,
