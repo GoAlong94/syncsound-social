@@ -38,15 +38,19 @@ export const useSyncEngine = ({
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('unsynced');
   const [lastSyncDelta, setLastSyncDelta] = useState<number>(0);
   
-  // STATE REFS
+  // REFS
   const latencyRef = useRef<number>(0);
   const clockOffsetRef = useRef<number>(0); 
   const currentVideoIdRef = useRef<string | null>(null);
   const syncStatusRef = useRef<SyncStatus>('unsynced');
   const lastSyncTimeRef = useRef<number>(0);
   const deviceInfo = useRef(getDeviceInfo());
+  
+  // MOBILE FIX 1: Lowest RTT tracking (The "Best Connection" Filter)
+  // On mobile, latency spikes are common. We only trust the Lowest RTT.
+  const minRttRef = useRef<number>(9999);
+  const wakeLockRef = useRef<any>(null);
 
-  // HANDLER REF
   const handlersRef = useRef({
     getCurrentTime,
     seekTo,
@@ -59,25 +63,32 @@ export const useSyncEngine = ({
   });
 
   useEffect(() => {
-    handlersRef.current = {
-      getCurrentTime,
-      seekTo,
-      setPlaybackRate,
-      play,
-      pause,
-      getPlayerState,
-      onVideoChange,
-      onQueueUpdate
-    };
+    handlersRef.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate };
   });
 
-  useEffect(() => {
-    latencyRef.current = latency;
-  }, [latency]);
+  useEffect(() => { latencyRef.current = latency; }, [latency]);
+  useEffect(() => { syncStatusRef.current = syncStatus; }, [syncStatus]);
 
+  // MOBILE FIX 2: Request Wake Lock
   useEffect(() => {
-    syncStatusRef.current = syncStatus;
-  }, [syncStatus]);
+    const requestWakeLock = async () => {
+      if ('wakeLock' in navigator && !wakeLockRef.current) {
+        try {
+          wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+          console.log('Wake Lock active!');
+        } catch (err) {
+          console.log('Wake Lock rejected:', err);
+        }
+      }
+    };
+    requestWakeLock();
+    // Re-request on visibility change (tabs drop wake lock when hidden)
+    const handleVis = () => {
+      if (document.visibilityState === 'visible') requestWakeLock();
+    };
+    document.addEventListener('visibilitychange', handleVis);
+    return () => document.removeEventListener('visibilitychange', handleVis);
+  }, []);
 
   const measureLatency = useCallback(() => {
     if (!channelRef.current) return;
@@ -102,13 +113,15 @@ export const useSyncEngine = ({
     if (isHost) return;
     setSyncStatus('syncing');
     syncStatusRef.current = 'syncing';
+    // Reset MinRTT on manual resync to allow fresh calibration
+    minRttRef.current = 9999; 
     requestSync();
     measureLatency();
   }, [isHost, requestSync, measureLatency]);
 
   // --- MAIN EFFECT ---
   useEffect(() => {
-    console.log("[SyncEngine] Initializing..."); 
+    console.log("[SyncEngine] Mobile Optimized Init..."); 
     
     const channel = supabase.channel(`room:${roomId}`, {
       config: {
@@ -135,20 +148,22 @@ export const useSyncEngine = ({
       setConnectedDevices(devices);
     });
 
-    // SYNC HANDLER (The Critical Part)
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: SyncMessage & { videoId?: string } }) => {
       if (isHost) return;
 
-      // 1. Calculate Absolute Host Time
       const localNow = Date.now();
       const hostNow = localNow + clockOffsetRef.current;
       
-      // 2. Calculate Travel Time
-      // How long ago (in Host Time) was this message sent?
+      // MOBILE FIX 3: Hardware Offset
+      // Android/iOS often process audio slower. We subtract a buffer.
+      let hardwareOffset = 0;
+      if (deviceInfo.current.os === 'iOS') hardwareOffset = 0.015; // 15ms
+      if (deviceInfo.current.os === 'Android') hardwareOffset = 0.040; // 40ms
+
       const timeSinceBroadcast = Math.max(0, (hostNow - (payload.timestamp || 0))) / 1000;
       
-      // 3. Estimate where Host is RIGHT NOW
-      const estimatedHostTime = (payload.currentTime || 0) + timeSinceBroadcast;
+      // Estimated Host Time adjusted for Hardware Latency
+      const estimatedHostTime = (payload.currentTime || 0) + timeSinceBroadcast - hardwareOffset;
       const localTime = handlersRef.current.getCurrentTime();
       
       const drift = estimatedHostTime - localTime;
@@ -156,9 +171,6 @@ export const useSyncEngine = ({
       const diffMs = Math.round(drift * 1000);
 
       setLastSyncDelta(diffMs);
-
-      // DEBUG LOGGING
-      console.log(`[Sync] Drift: ${diffMs}ms | HostTime: ${estimatedHostTime.toFixed(3)} | LocalTime: ${localTime.toFixed(3)} | Offset: ${Math.round(clockOffsetRef.current)}ms`);
 
       if (payload.videoId && payload.videoId !== currentVideoIdRef.current) {
         requestSync();
@@ -168,22 +180,20 @@ export const useSyncEngine = ({
       let targetRate = 1;
       let newStatus: SyncStatus = 'synced';
 
-      // --- NEW AGGRESSIVE THRESHOLDS ---
-      if (absDrift < 0.045) { // 45ms: Perfect
+      // Aggressive catch-up for Mobile
+      if (absDrift < 0.05) { 
         targetRate = 1;
         newStatus = 'synced';
-      } else if (absDrift < 0.1) { // 45ms - 100ms: Micro adjustment
+      } else if (absDrift < 0.15) { 
+        // 50ms-150ms: Micro-correct
         targetRate = drift > 0 ? 1.02 : 0.98;
         newStatus = 'syncing';
-      } else if (absDrift < 0.6) { // 100ms - 600ms: Strong adjustment
-        // If we are +700ms ahead (drift is negative), we need 0.90 speed
-        // If we are -700ms behind (drift is positive), we need 1.10 speed
+      } else if (absDrift < 0.8) { 
+        // 150ms-800ms: Strong correct
         targetRate = drift > 0 ? 1.08 : 0.92;
         newStatus = 'syncing';
       } else {
-        // > 600ms: JUMP (Snap to position)
-        // This fixes the "700ms lag" issue by forcing a seek
-        console.log(`[Sync] Large drift detected (${diffMs}ms). Seeking to ${estimatedHostTime}`);
+        // > 800ms: Jump
         handlersRef.current.seekTo(estimatedHostTime);
         targetRate = 1;
         newStatus = 'syncing';
@@ -193,17 +203,15 @@ export const useSyncEngine = ({
       setSyncStatus(newStatus);
       syncStatusRef.current = newStatus;
 
+      // Force play/pause state
       const localState = handlersRef.current.getPlayerState();
-      if (payload.isPlaying && localState !== 1) {
-        handlersRef.current.play();
-      } else if (!payload.isPlaying && localState === 1) {
-        handlersRef.current.pause();
-      }
+      if (payload.isPlaying && localState !== 1) handlersRef.current.play();
+      else if (!payload.isPlaying && localState === 1) handlersRef.current.pause();
     });
 
+    // ... (Force Sync, Video Change handlers - same as before) ...
     channel.on('broadcast', { event: 'force_sync' }, ({ payload }) => {
       if (isHost) return;
-      console.log("[Sync] Force Sync received");
       const localNow = Date.now();
       const hostNow = localNow + clockOffsetRef.current;
       const timeSinceBroadcast = Math.max(0, (hostNow - (payload.timestamp || 0))) / 1000;
@@ -214,7 +222,6 @@ export const useSyncEngine = ({
       handlersRef.current.seekTo(targetTime);
       handlersRef.current.setPlaybackRate(1);
       payload.isPlaying ? handlersRef.current.play() : handlersRef.current.pause();
-      
       setSyncStatus('syncing');
       syncStatusRef.current = 'syncing';
     });
@@ -238,12 +245,12 @@ export const useSyncEngine = ({
 
     channel.on('broadcast', { event: 'play' }, () => { if (!isHost) handlersRef.current.play(); });
     channel.on('broadcast', { event: 'pause' }, () => { if (!isHost) handlersRef.current.pause(); });
+    channel.on('broadcast', { event: 'queue_update' }, ({ payload }) => { if (!isHost && payload) handlersRef.current.onQueueUpdate?.(payload as QueueState); });
 
     channel.on('broadcast', { event: 'video_change' }, ({ payload }: { payload: SyncMessage }) => {
       if (!isHost && payload.videoId && payload.videoTitle && payload.videoThumbnail) {
         currentVideoIdRef.current = payload.videoId;
         handlersRef.current.onVideoChange?.(payload.videoId, payload.videoTitle, payload.videoThumbnail);
-        
         setTimeout(() => {
           if (payload.startTime !== undefined && payload.timestamp) {
             const localNow = Date.now();
@@ -253,18 +260,12 @@ export const useSyncEngine = ({
             handlersRef.current.seekTo(targetTime);
           }
         }, 1500);
-        
         setSyncStatus('syncing');
         syncStatusRef.current = 'syncing';
       }
     });
 
-    channel.on('broadcast', { event: 'queue_update' }, ({ payload }) => {
-      if (!isHost && payload) {
-        handlersRef.current.onQueueUpdate?.(payload as QueueState);
-      }
-    });
-
+    // PING/PONG logic
     channel.on('broadcast', { event: 'ping' }, ({ payload }) => {
       if (isHost && payload.senderId !== userId) {
         channel.send({
@@ -286,26 +287,40 @@ export const useSyncEngine = ({
         const rtt = now - payload.timestamp;
         const offset = payload.hostTime - payload.timestamp - (rtt / 2);
         
-        // LOGGING CLOCK SYNC
-        console.log(`[ClockSync] RTT: ${rtt}ms | Computed Offset: ${offset}ms`);
+        // MOBILE LOGIC: Only update if this is a "good" ping (Low RTT)
+        // If RTT is 300ms, it's garbage (jitter). If 50ms, it's gold.
+        
+        let shouldUpdate = false;
 
-        const prev = clockOffsetRef.current;
-        // Faster convergence on startup (if offset is 0, take new value immediately)
-        clockOffsetRef.current = prev === 0 ? offset : (prev * 0.8 + offset * 0.2);
+        // If this is our best RTT yet (or close to it), trust it 100%
+        if (rtt <= minRttRef.current) {
+          minRttRef.current = rtt;
+          clockOffsetRef.current = offset; // Snap directly to best sample
+          shouldUpdate = true;
+          console.log(`[Clock] New Best RTT: ${rtt}ms. Offset updated to ${Math.round(offset)}ms`);
+        } 
+        // If RTT is within 20% of our best, smooth it in
+        else if (rtt < minRttRef.current * 1.2) {
+          const prev = clockOffsetRef.current;
+          clockOffsetRef.current = prev * 0.8 + offset * 0.2;
+          shouldUpdate = true;
+        }
         
         setLatency(rtt);
         latencyRef.current = rtt;
         
-        channel.track({
-          id: userId,
-          isHost,
-          joinedAt: Date.now(),
-          os: deviceInfo.current.os,
-          browser: deviceInfo.current.browser,
-          syncStatus: syncStatusRef.current,
-          latency: rtt,
-          lastSyncDelta: 0
-        });
+        if (shouldUpdate) {
+           channel.track({
+            id: userId,
+            isHost,
+            joinedAt: Date.now(),
+            os: deviceInfo.current.os,
+            browser: deviceInfo.current.browser,
+            syncStatus: syncStatusRef.current,
+            latency: rtt,
+            lastSyncDelta: 0
+          });
+        }
       }
     });
 
@@ -326,14 +341,14 @@ export const useSyncEngine = ({
           // Burst pings for initial clock sync
           let pings = 0;
           const interval = setInterval(() => {
-             if (pings++ < 5) {
+             if (pings++ < 8) { // More pings for mobile to find a "lucky" low-latency packet
                 const pingTime = Date.now();
                 channel.send({ type: 'broadcast', event: 'ping', payload: { timestamp: pingTime, senderId: userId } });
              } else {
                 clearInterval(interval);
                 channel.send({ type: 'broadcast', event: 'sync_request', payload: { senderId: userId } });
              }
-          }, 500);
+          }, 400);
         }
       }
     });
@@ -355,12 +370,12 @@ export const useSyncEngine = ({
     };
   }, [roomId, userId, isHost]);
 
+  // Host Broadcast Loop
   useEffect(() => {
     if (!isHost || !channelRef.current) return;
     const interval = setInterval(() => {
       const currentTime = handlersRef.current.getCurrentTime();
       const playerState = handlersRef.current.getPlayerState();
-      
       if (currentTime !== lastSyncTimeRef.current || playerState === 1) {
         channelRef.current?.send({
           type: 'broadcast',
@@ -379,23 +394,7 @@ export const useSyncEngine = ({
     return () => clearInterval(interval);
   }, [isHost]);
 
-  // Methods
-  const forceResync = useCallback(() => {
-    if (!channelRef.current || !isHost) return;
-    const currentTime = handlersRef.current.getCurrentTime();
-    const playerState = handlersRef.current.getPlayerState();
-    channelRef.current.send({
-      type: 'broadcast',
-      event: 'force_sync',
-      payload: {
-        currentTime,
-        videoId: currentVideoIdRef.current,
-        isPlaying: playerState === 1,
-        timestamp: Date.now(),
-      },
-    });
-  }, [isHost]);
-
+  // ... (broadcast methods same as before)
   const broadcastPlay = useCallback(() => { channelRef.current?.send({ type: 'broadcast', event: 'play', payload: { type: 'play' } }); }, []);
   const broadcastPause = useCallback(() => { channelRef.current?.send({ type: 'broadcast', event: 'pause', payload: { type: 'pause' } }); }, []);
   const broadcastVideoChange = useCallback((videoId: string, title: string, thumbnail: string) => {
@@ -404,18 +403,12 @@ export const useSyncEngine = ({
     channelRef.current?.send({
       type: 'broadcast',
       event: 'video_change',
-      payload: {
-        type: 'video_change',
-        videoId,
-        videoTitle: title,
-        videoThumbnail: thumbnail,
-        startTime: currentTime,
-        timestamp: Date.now(),
-      },
+      payload: { type: 'video_change', videoId, videoTitle: title, videoThumbnail: thumbnail, startTime: currentTime, timestamp: Date.now() },
     });
   }, []);
   const broadcastQueueUpdate = useCallback((queue: QueueState) => { channelRef.current?.send({ type: 'broadcast', event: 'queue_update', payload: queue }); }, []);
   const setCurrentVideoId = useCallback((videoId: string) => { currentVideoIdRef.current = videoId; }, []);
+  const forceResync = useCallback(() => { if (channelRef.current && isHost) { const currentTime = handlersRef.current.getCurrentTime(); const playerState = handlersRef.current.getPlayerState(); channelRef.current.send({ type: 'broadcast', event: 'force_sync', payload: { currentTime, videoId: currentVideoIdRef.current, isPlaying: playerState === 1, timestamp: Date.now() } }); } }, [isHost]);
 
   return {
     connectedDevices,
