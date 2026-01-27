@@ -81,22 +81,6 @@ export const useSyncEngine = ({
     syncStatusRef.current = syncStatus;
   }, [syncStatus]);
 
-  const updatePresence = useCallback(async (updates: Partial<PresenceState>) => {
-    if (!channelRef.current) return;
-    
-    await channelRef.current.track({
-      id: userId,
-      isHost,
-      joinedAt: Date.now(),
-      os: deviceInfo.current.os,
-      browser: deviceInfo.current.browser,
-      syncStatus: syncStatusRef.current,
-      latency: latencyRef.current,
-      lastSyncDelta,
-      ...updates,
-    });
-  }, [userId, isHost, lastSyncDelta]);
-
   // Measure latency via ping/pong
   const measureLatency = useCallback(() => {
     if (!channelRef.current) return;
@@ -127,7 +111,7 @@ export const useSyncEngine = ({
 
   // --- MAIN EFFECT: ONE-TIME SETUP ---
   useEffect(() => {
-    console.log("Initializing Sync Engine..."); // Should only see this ONCE per room join
+    console.log("Initializing Sync Engine..."); 
     
     const channel = supabase.channel(`room:${roomId}`, {
       config: {
@@ -179,6 +163,7 @@ export const useSyncEngine = ({
       let targetRate = 1;
       let newStatus: SyncStatus = 'synced';
 
+      // Tolerances
       if (absDrift < 0.045) { // 45ms tolerance
         targetRate = 1;
         newStatus = 'synced';
@@ -207,9 +192,8 @@ export const useSyncEngine = ({
       } else if (!payload.isPlaying && localState === 1) {
         handlersRef.current.pause();
       }
-
-      // We DON'T update presence here to avoid spamming the channel
-      // Only update presence on status change or significant events
+      
+      // We do NOT update presence on every sync pulse to avoid flooding
     });
 
     channel.on('broadcast', { event: 'force_sync' }, ({ payload }) => {
@@ -276,6 +260,7 @@ export const useSyncEngine = ({
       }
     });
 
+    // PING HANDLER (Host side)
     channel.on('broadcast', { event: 'ping' }, ({ payload }) => {
       if (isHost && payload.senderId !== userId) {
         channel.send({
@@ -291,20 +276,20 @@ export const useSyncEngine = ({
       }
     });
 
+    // PONG HANDLER (Joiner side)
     channel.on('broadcast', { event: 'pong' }, ({ payload }) => {
       if (!isHost && payload.targetId === userId) {
         const now = Date.now();
         const rtt = now - payload.timestamp;
         const offset = payload.hostTime - payload.timestamp - (rtt / 2);
         
-        // Simple smoothing
         const prev = clockOffsetRef.current;
         clockOffsetRef.current = prev === 0 ? offset : (prev * 0.8 + offset * 0.2);
         
         setLatency(rtt);
         latencyRef.current = rtt;
         
-        // Update presence with latency (but throttled)
+        // Update presence less frequently to avoid jitter
         channel.track({
           id: userId,
           isHost,
@@ -362,9 +347,7 @@ export const useSyncEngine = ({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       channel.unsubscribe();
     };
-    // CRITICAL: Empty dependency array mostly. 
-    // We only reconnect if the ROOM or USER changes.
-  }, [roomId, userId, isHost]); 
+  }, [roomId, userId, isHost]); // <--- CRITICAL: Minimal dependencies
 
   // Host Broadcast Loop
   useEffect(() => {
@@ -393,7 +376,7 @@ export const useSyncEngine = ({
     return () => clearInterval(interval);
   }, [isHost]);
 
-  // Public Methods (Memoized)
+  // Public Methods
   const forceResync = useCallback(() => {
     if (!channelRef.current || !isHost) return;
     const currentTime = handlersRef.current.getCurrentTime();
