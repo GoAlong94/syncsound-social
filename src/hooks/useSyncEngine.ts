@@ -40,6 +40,8 @@ export const useSyncEngine = ({
   
   // Refs for fresh values in handlers (avoid stale closures)
   const latencyRef = useRef<number>(0);
+  // clockOffset = HostTime - LocalTime
+  const clockOffsetRef = useRef<number>(0); 
   const currentVideoIdRef = useRef<string | null>(null);
   const syncStatusRef = useRef<SyncStatus>('unsynced');
   
@@ -81,7 +83,10 @@ export const useSyncEngine = ({
     channelRef.current.send({
       type: 'broadcast',
       event: 'ping',
-      payload: { timestamp: pingTime, senderId: userId },
+      payload: { 
+        timestamp: pingTime, 
+        senderId: userId 
+      },
     });
   }, [userId]);
 
@@ -157,11 +162,22 @@ export const useSyncEngine = ({
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: SyncMessage & { videoId?: string } }) => {
       if (isHost) return;
 
-      // Use ref for fresh latency value
-      const networkDelay = latencyRef.current / 2000; // Half RTT in seconds
-      const timeSinceBroadcast = payload.timestamp ? (Date.now() - payload.timestamp) / 1000 : 0;
-      const estimatedHostTime = (payload.currentTime || 0) + networkDelay + timeSinceBroadcast;
+      // CORE SYNC LOGIC with Clock Offset Compensation
+      const localNow = Date.now();
+      const hostNow = localNow + clockOffsetRef.current;
+      
+      // Time passed since host sent the message (in seconds)
+      // hostNow - payload.timestamp gives us the exact flight time + processing time
+      // using the synchronized clock timeline
+      const timeSinceBroadcast = Math.max(0, (hostNow - (payload.timestamp || 0))) / 1000;
+      
+      // One-way delay estimate (half RTT)
+      const networkDelay = latencyRef.current / 2000; 
+      
+      // Calculate where the host is NOW
+      const estimatedHostTime = (payload.currentTime || 0) + timeSinceBroadcast;
       const localTime = getCurrentTime();
+      
       const drift = estimatedHostTime - localTime;
       const absDrift = Math.abs(drift);
       const diffMs = Math.round(drift * 1000);
@@ -178,16 +194,16 @@ export const useSyncEngine = ({
       let targetRate = 1;
       let newStatus: SyncStatus = 'synced';
 
-      if (absDrift < 0.04) {
-        // < 40ms: Synced, no correction needed
+      if (absDrift < 0.04) { // 40ms threshold
+        // Perfect sync, normal speed
         targetRate = 1;
         newStatus = 'synced';
       } else if (absDrift < 0.1) {
-        // 40-100ms: Micro-correction
+        // 40-100ms: Micro-correction (imperceptible pitch shift)
         targetRate = drift > 0 ? 1.02 : 0.98;
         newStatus = 'syncing';
       } else if (absDrift < 0.5) {
-        // 100-500ms: Standard correction
+        // 100-500ms: Stronger correction
         targetRate = drift > 0 ? 1.05 : 0.95;
         newStatus = 'syncing';
       } else if (absDrift < 2) {
@@ -224,9 +240,11 @@ export const useSyncEngine = ({
     channel.on('broadcast', { event: 'force_sync' }, ({ payload }) => {
       if (isHost) return;
 
-      const networkDelay = latencyRef.current / 2000;
-      const timeSinceBroadcast = payload.timestamp ? (Date.now() - payload.timestamp) / 1000 : 0;
-      const targetTime = payload.currentTime + networkDelay + timeSinceBroadcast;
+      const localNow = Date.now();
+      const hostNow = localNow + clockOffsetRef.current;
+      const timeSinceBroadcast = Math.max(0, (hostNow - (payload.timestamp || 0))) / 1000;
+      
+      const targetTime = payload.currentTime + timeSinceBroadcast;
       
       // Update video ID if provided
       if (payload.videoId) {
@@ -288,9 +306,11 @@ export const useSyncEngine = ({
         // Wait for video to load, then seek to host position
         setTimeout(() => {
           if (payload.startTime !== undefined && payload.timestamp) {
-            const networkDelay = latencyRef.current / 2000;
-            const timeSinceBroadcast = (Date.now() - payload.timestamp) / 1000;
-            const targetTime = payload.startTime + networkDelay + timeSinceBroadcast;
+            const localNow = Date.now();
+            const hostNow = localNow + clockOffsetRef.current;
+            const timeSinceBroadcast = Math.max(0, (hostNow - payload.timestamp)) / 1000;
+            
+            const targetTime = payload.startTime + timeSinceBroadcast;
             seekTo(targetTime);
           }
         }, 1500); // Wait for video load
@@ -306,27 +326,52 @@ export const useSyncEngine = ({
       }
     });
 
+    // PING HANDLER (Host side)
     channel.on('broadcast', { event: 'ping' }, ({ payload }) => {
-      if (payload.senderId !== userId) {
+      // Host responds to ping, adding its own timestamp for clock sync
+      if (isHost && payload.senderId !== userId) {
+        const hostTime = Date.now();
         channel.send({
           type: 'broadcast',
           event: 'pong',
-          payload: { timestamp: payload.timestamp, responderId: userId },
+          payload: { 
+            timestamp: payload.timestamp, // Echo client's T0
+            hostTime: hostTime,           // Host's T1
+            targetId: payload.senderId,   // Ensure only sender processes this
+            responderId: userId 
+          },
         });
       }
     });
 
+    // PONG HANDLER (Joiner side) - CLOCK SYNC & LATENCY
     channel.on('broadcast', { event: 'pong' }, ({ payload }) => {
-      if (isHost) {
-        const rtt = Date.now() - payload.timestamp;
-        setLatency(rtt);
-        latencyRef.current = rtt;
-      } else if (payload.responderId !== userId) {
-        // Joiners can also track their latency
-        const rtt = Date.now() - payload.timestamp;
+      // Only process pongs intended for me
+      if (!isHost && payload.targetId === userId) {
+        const now = Date.now(); // T3
+        const rtt = now - payload.timestamp; // T3 - T0
+        
+        // NTP Clock Offset Calculation
+        // Offset = (HostReceiveTime - ClientSendTime) - (RTT / 2)
+        // This assumes symmetric network delay, which is the standard assumption
+        const hostTime = payload.hostTime;
+        const clientSendTime = payload.timestamp;
+        
+        // Offset: Add this to LocalTime to get HostTime
+        const computedOffset = hostTime - clientSendTime - (rtt / 2);
+        
+        // Smooth the offset using a moving average to reduce jitter
+        const previousOffset = clockOffsetRef.current;
+        // If it's the first measurement (offset is 0), take it directly. Otherwise smooth.
+        const newOffset = previousOffset === 0 ? computedOffset : (previousOffset * 0.8 + computedOffset * 0.2);
+        
+        clockOffsetRef.current = newOffset;
+        
         setLatency(rtt);
         latencyRef.current = rtt;
         updatePresence({ latency: rtt });
+        
+        // console.log(`Sync Stats: RTT=${rtt}ms, Offset=${Math.round(newOffset)}ms`);
       }
     });
 
@@ -346,10 +391,17 @@ export const useSyncEngine = ({
         
         // Joiner: request initial sync
         if (!isHost) {
-          setTimeout(() => {
-            requestSync();
-            measureLatency();
-          }, 500);
+          // Rapid initial ping burst for quick clock convergence
+          let pings = 0;
+          const initialPingInterval = setInterval(() => {
+            if (pings < 5) {
+              measureLatency();
+              pings++;
+            } else {
+              clearInterval(initialPingInterval);
+              requestSync();
+            }
+          }, 1000);
         }
       }
     });
@@ -393,7 +445,7 @@ export const useSyncEngine = ({
             currentTime,
             videoId: currentVideoIdRef.current,
             isPlaying: playerState === 1,
-            timestamp: Date.now(),
+            timestamp: Date.now(), // Host time
           },
         });
         lastSyncTimeRef.current = currentTime;
