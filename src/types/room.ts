@@ -18,6 +18,9 @@ export interface SyncMessage {
   startTime?: number;
   timestamp?: number;
   senderId?: string;
+  // New fields for robust sync
+  targetId?: string;    // To ensure pongs go to the right person
+  hostTime?: number;    // The host's system time when receiving a ping
 }
 
 export type SyncStatus = 'synced' | 'syncing' | 'unsynced' | 'error';
