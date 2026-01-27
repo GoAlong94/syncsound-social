@@ -38,10 +38,23 @@ export const useSyncEngine = ({
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('unsynced');
   const [lastSyncDelta, setLastSyncDelta] = useState<number>(0);
   
+  // Refs for fresh values in handlers (avoid stale closures)
+  const latencyRef = useRef<number>(0);
+  const currentVideoIdRef = useRef<string | null>(null);
+  const syncStatusRef = useRef<SyncStatus>('unsynced');
+  
   const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastSyncTimeRef = useRef<number>(0);
-  const rateResetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const deviceInfo = useRef(getDeviceInfo());
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    latencyRef.current = latency;
+  }, [latency]);
+
+  useEffect(() => {
+    syncStatusRef.current = syncStatus;
+  }, [syncStatus]);
 
   // Update presence with current sync status
   const updatePresence = useCallback(async (updates: Partial<PresenceState>) => {
@@ -53,12 +66,12 @@ export const useSyncEngine = ({
       joinedAt: Date.now(),
       os: deviceInfo.current.os,
       browser: deviceInfo.current.browser,
-      syncStatus,
-      latency,
+      syncStatus: syncStatusRef.current,
+      latency: latencyRef.current,
       lastSyncDelta,
       ...updates,
     });
-  }, [userId, isHost, syncStatus, latency, lastSyncDelta]);
+  }, [userId, isHost, lastSyncDelta]);
 
   // Measure latency via ping/pong
   const measureLatency = useCallback(() => {
@@ -84,6 +97,7 @@ export const useSyncEngine = ({
       event: 'force_sync',
       payload: {
         currentTime,
+        videoId: currentVideoIdRef.current,
         isPlaying: playerState === 1,
         timestamp: Date.now(),
       },
@@ -106,6 +120,7 @@ export const useSyncEngine = ({
     if (isHost) return;
     
     setSyncStatus('syncing');
+    syncStatusRef.current = 'syncing';
     requestSync();
     measureLatency();
   }, [isHost, requestSync, measureLatency]);
@@ -138,46 +153,57 @@ export const useSyncEngine = ({
       setConnectedDevices(devices);
     });
 
-    // Handle sync broadcasts from host
-    channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: SyncMessage }) => {
+    // Handle sync broadcasts from host - GRADUATED CORRECTION ALGORITHM
+    channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: SyncMessage & { videoId?: string } }) => {
       if (isHost) return;
 
-      const networkDelay = latency / 2000; // Half RTT in seconds
-      const hostTime = (payload.currentTime || 0) + networkDelay;
+      // Use ref for fresh latency value
+      const networkDelay = latencyRef.current / 2000; // Half RTT in seconds
+      const timeSinceBroadcast = payload.timestamp ? (Date.now() - payload.timestamp) / 1000 : 0;
+      const estimatedHostTime = (payload.currentTime || 0) + networkDelay + timeSinceBroadcast;
       const localTime = getCurrentTime();
-      const diff = hostTime - localTime;
-      const diffMs = Math.round(diff * 1000);
+      const drift = estimatedHostTime - localTime;
+      const absDrift = Math.abs(drift);
+      const diffMs = Math.round(drift * 1000);
 
       setLastSyncDelta(diffMs);
 
-      // Determine sync status based on drift
-      if (Math.abs(diff) < 0.04) {
-        setSyncStatus('synced');
-        // Reset playback rate if we're synced
-        if (rateResetTimeoutRef.current) {
-          clearTimeout(rateResetTimeoutRef.current);
-          rateResetTimeoutRef.current = null;
-        }
-        setPlaybackRate(1);
-      } else if (Math.abs(diff) <= 2) {
-        setSyncStatus('syncing');
-        // Smooth correction via playback rate
-        const rate = diff > 0 ? 1.05 : 0.95;
-        setPlaybackRate(rate);
-        
-        // Reset rate after correction period
-        if (rateResetTimeoutRef.current) {
-          clearTimeout(rateResetTimeoutRef.current);
-        }
-        rateResetTimeoutRef.current = setTimeout(() => {
-          setPlaybackRate(1);
-        }, Math.min(Math.abs(diff) * 1000, 2000));
-      } else {
-        // Major desync: hard seek
-        setSyncStatus('syncing');
-        seekTo(hostTime);
-        setPlaybackRate(1);
+      // Validate same video - if mismatch, request full sync
+      if (payload.videoId && payload.videoId !== currentVideoIdRef.current) {
+        requestSync();
+        return;
       }
+
+      // Graduated drift correction algorithm
+      let targetRate = 1;
+      let newStatus: SyncStatus = 'synced';
+
+      if (absDrift < 0.04) {
+        // < 40ms: Synced, no correction needed
+        targetRate = 1;
+        newStatus = 'synced';
+      } else if (absDrift < 0.1) {
+        // 40-100ms: Micro-correction
+        targetRate = drift > 0 ? 1.02 : 0.98;
+        newStatus = 'syncing';
+      } else if (absDrift < 0.5) {
+        // 100-500ms: Standard correction
+        targetRate = drift > 0 ? 1.05 : 0.95;
+        newStatus = 'syncing';
+      } else if (absDrift < 2) {
+        // 500ms-2s: Aggressive correction
+        targetRate = drift > 0 ? 1.10 : 0.90;
+        newStatus = 'syncing';
+      } else {
+        // > 2s: Hard seek required
+        seekTo(estimatedHostTime);
+        targetRate = 1;
+        newStatus = 'syncing';
+      }
+
+      setPlaybackRate(targetRate);
+      setSyncStatus(newStatus);
+      syncStatusRef.current = newStatus;
 
       // Sync play/pause state
       const localState = getPlayerState();
@@ -189,7 +215,7 @@ export const useSyncEngine = ({
 
       // Update presence with new sync status
       updatePresence({
-        syncStatus: Math.abs(diff) < 0.04 ? 'synced' : 'syncing',
+        syncStatus: newStatus,
         lastSyncDelta: diffMs,
       });
     });
@@ -198,8 +224,14 @@ export const useSyncEngine = ({
     channel.on('broadcast', { event: 'force_sync' }, ({ payload }) => {
       if (isHost) return;
 
-      const networkDelay = latency / 2000;
-      const targetTime = payload.currentTime + networkDelay;
+      const networkDelay = latencyRef.current / 2000;
+      const timeSinceBroadcast = payload.timestamp ? (Date.now() - payload.timestamp) / 1000 : 0;
+      const targetTime = payload.currentTime + networkDelay + timeSinceBroadcast;
+      
+      // Update video ID if provided
+      if (payload.videoId) {
+        currentVideoIdRef.current = payload.videoId;
+      }
       
       seekTo(targetTime);
       setPlaybackRate(1);
@@ -211,6 +243,7 @@ export const useSyncEngine = ({
       }
       
       setSyncStatus('syncing');
+      syncStatusRef.current = 'syncing';
       setLastSyncDelta(0);
     });
 
@@ -227,6 +260,7 @@ export const useSyncEngine = ({
         payload: {
           type: 'sync',
           currentTime,
+          videoId: currentVideoIdRef.current,
           isPlaying: playerState === 1,
           timestamp: Date.now(),
         },
@@ -245,10 +279,24 @@ export const useSyncEngine = ({
       }
     });
 
+    // Handle video change with position sync
     channel.on('broadcast', { event: 'video_change' }, ({ payload }: { payload: SyncMessage }) => {
       if (!isHost && payload.videoId && payload.videoTitle && payload.videoThumbnail) {
+        currentVideoIdRef.current = payload.videoId;
         onVideoChange?.(payload.videoId, payload.videoTitle, payload.videoThumbnail);
+        
+        // Wait for video to load, then seek to host position
+        setTimeout(() => {
+          if (payload.startTime !== undefined && payload.timestamp) {
+            const networkDelay = latencyRef.current / 2000;
+            const timeSinceBroadcast = (Date.now() - payload.timestamp) / 1000;
+            const targetTime = payload.startTime + networkDelay + timeSinceBroadcast;
+            seekTo(targetTime);
+          }
+        }, 1500); // Wait for video load
+        
         setSyncStatus('syncing');
+        syncStatusRef.current = 'syncing';
       }
     });
 
@@ -272,10 +320,12 @@ export const useSyncEngine = ({
       if (isHost) {
         const rtt = Date.now() - payload.timestamp;
         setLatency(rtt);
+        latencyRef.current = rtt;
       } else if (payload.responderId !== userId) {
         // Joiners can also track their latency
         const rtt = Date.now() - payload.timestamp;
         setLatency(rtt);
+        latencyRef.current = rtt;
         updatePresence({ latency: rtt });
       }
     });
@@ -306,9 +356,11 @@ export const useSyncEngine = ({
 
     channelRef.current = channel;
 
-    // Handle tab visibility for joiners
+    // Handle tab visibility for joiners - immediate resync when returning
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && !isHost) {
+        setSyncStatus('syncing');
+        syncStatusRef.current = 'syncing';
         requestSync();
         measureLatency();
       }
@@ -319,15 +371,12 @@ export const useSyncEngine = ({
       if (syncIntervalRef.current) {
         clearInterval(syncIntervalRef.current);
       }
-      if (rateResetTimeoutRef.current) {
-        clearTimeout(rateResetTimeoutRef.current);
-      }
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       channel.unsubscribe();
     };
-  }, [roomId, userId, isHost, getCurrentTime, seekTo, setPlaybackRate, play, pause, latency, onVideoChange, onQueueUpdate, getPlayerState, updatePresence, requestSync, measureLatency]);
+  }, [roomId, userId, isHost, getCurrentTime, seekTo, setPlaybackRate, play, pause, onVideoChange, onQueueUpdate, getPlayerState, updatePresence, requestSync, measureLatency]);
 
-  // Host broadcasts current time every second
+  // Host broadcasts current time every 500ms (faster for tighter sync)
   useEffect(() => {
     if (!isHost || !channelRef.current) return;
 
@@ -342,13 +391,14 @@ export const useSyncEngine = ({
           payload: {
             type: 'sync',
             currentTime,
+            videoId: currentVideoIdRef.current,
             isPlaying: playerState === 1,
             timestamp: Date.now(),
           },
         });
         lastSyncTimeRef.current = currentTime;
       }
-    }, 1000);
+    }, 500); // 500ms for tighter sync feedback loop
 
     // Measure latency periodically
     const latencyInterval = setInterval(measureLatency, 5000);
@@ -378,6 +428,9 @@ export const useSyncEngine = ({
   }, []);
 
   const broadcastVideoChange = useCallback((videoId: string, title: string, thumbnail: string) => {
+    currentVideoIdRef.current = videoId;
+    const currentTime = getCurrentTime();
+    
     channelRef.current?.send({
       type: 'broadcast',
       event: 'video_change',
@@ -386,9 +439,11 @@ export const useSyncEngine = ({
         videoId,
         videoTitle: title,
         videoThumbnail: thumbnail,
+        startTime: currentTime,
+        timestamp: Date.now(),
       },
     });
-  }, []);
+  }, [getCurrentTime]);
 
   const broadcastQueueUpdate = useCallback((queue: QueueState) => {
     channelRef.current?.send({
@@ -396,6 +451,11 @@ export const useSyncEngine = ({
       event: 'queue_update',
       payload: queue,
     });
+  }, []);
+
+  // Track video ID when host changes video locally
+  const setCurrentVideoId = useCallback((videoId: string) => {
+    currentVideoIdRef.current = videoId;
   }, []);
 
   return {
@@ -411,5 +471,6 @@ export const useSyncEngine = ({
     manualResync,
     measureLatency,
     deviceInfo: deviceInfo.current,
+    setCurrentVideoId,
   };
 };
