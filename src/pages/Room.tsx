@@ -68,6 +68,7 @@ const Room = () => {
     manualResync,
     measureLatency,
     deviceInfo,
+    setCurrentVideoId,
   } = useSyncEngine({
     roomId: roomId || '',
     isHost,
@@ -102,6 +103,7 @@ const Room = () => {
       setVideoId(vid);
       setVideoTitle(title);
       setVideoThumbnail(thumb);
+      setCurrentVideoId(vid); // Track video ID for sync validation
       if (playerControlsRef.current) {
         playerControlsRef.current.loadVideo(vid);
       }

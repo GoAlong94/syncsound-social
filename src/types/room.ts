@@ -15,6 +15,7 @@ export interface SyncMessage {
   videoId?: string;
   videoTitle?: string;
   videoThumbnail?: string;
+  startTime?: number;
   timestamp?: number;
   senderId?: string;
 }
