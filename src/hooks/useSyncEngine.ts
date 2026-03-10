@@ -44,7 +44,6 @@ export const useSyncEngine = ({
   const syncStatusRef = useRef<SyncStatus>('unsynced');
   const deviceInfo = useRef(getDeviceInfo());
   
-  // The "Epoch" state - tracks absolute exact network start time
   const playbackEpochRef = useRef({
     isPlaying: false,
     startNetworkTime: 0,
@@ -56,59 +55,57 @@ export const useSyncEngine = ({
   const minRttRef = useRef<number>(9999);
   const wakeLockRef = useRef<any>(null);
 
-  const handlersRef = useRef({
-    getCurrentTime,
-    seekTo,
-    setPlaybackRate,
-    play,
-    pause,
-    getPlayerState,
-    onVideoChange,
-    onQueueUpdate
-  });
+  // --- DEBUG LOGGER ---
+  const syncLogs = useRef<any[]>([]);
+  const logDebug = useCallback((event: string, data: any) => {
+    syncLogs.current.push({
+      logTime: new Date().toISOString(),
+      role: isHost ? 'HOST' : 'JOINER',
+      event,
+      deviceInfo: deviceInfo.current,
+      ...data
+    });
+    // Keep array from growing infinitely and crashing mobile browsers
+    if (syncLogs.current.length > 2000) syncLogs.current.shift();
+  }, [isHost]);
 
-  useEffect(() => {
-    handlersRef.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate };
-  });
+  const downloadLogs = useCallback(() => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(syncLogs.current, null, 2));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", `sync_debug_${isHost ? 'host' : 'joiner'}_${userId.slice(0,5)}.json`);
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  }, [isHost, userId]);
+  // ---------------------
 
+  const handlersRef = useRef({ getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate });
+  useEffect(() => { handlersRef.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; });
   useEffect(() => { latencyRef.current = latency; }, [latency]);
   useEffect(() => { syncStatusRef.current = syncStatus; }, [syncStatus]);
 
-  // Mobile Wake Lock Implementation
   useEffect(() => {
     const requestWakeLock = async () => {
       if ('wakeLock' in navigator && !wakeLockRef.current) {
-        try {
-          wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-        } catch (err) {
-          console.log('Wake Lock rejected:', err);
-        }
+        try { wakeLockRef.current = await (navigator as any).wakeLock.request('screen'); } 
+        catch (err) {}
       }
     };
     requestWakeLock();
-    const handleVis = () => {
-      if (document.visibilityState === 'visible') requestWakeLock();
-    };
+    const handleVis = () => { if (document.visibilityState === 'visible') requestWakeLock(); };
     document.addEventListener('visibilitychange', handleVis);
     return () => document.removeEventListener('visibilitychange', handleVis);
   }, []);
 
   const measureLatency = useCallback(() => {
     if (!channelRef.current) return;
-    channelRef.current.send({
-      type: 'broadcast',
-      event: 'ping',
-      payload: { timestamp: Date.now(), senderId: userId },
-    });
+    channelRef.current.send({ type: 'broadcast', event: 'ping', payload: { timestamp: Date.now(), senderId: userId } });
   }, [userId]);
 
   const requestSync = useCallback(() => {
     if (!channelRef.current || isHost) return;
-    channelRef.current.send({
-      type: 'broadcast',
-      event: 'sync_request',
-      payload: { senderId: userId },
-    });
+    channelRef.current.send({ type: 'broadcast', event: 'sync_request', payload: { senderId: userId } });
   }, [isHost, userId]);
 
   const manualResync = useCallback(() => {
@@ -120,44 +117,30 @@ export const useSyncEngine = ({
     measureLatency();
   }, [isHost, requestSync, measureLatency]);
 
-  const safeSeek = useCallback((time: number) => {
+  const safeSeek = useCallback((time: number, reason: string) => {
+    logDebug('SAFE_SEEK_EXECUTED', { targetTime: time, reason });
     handlersRef.current.seekTo(time);
-    ignoreSyncUntilRef.current = Date.now() + 2500; // Pause sync checks while buffering
-  }, []);
+    ignoreSyncUntilRef.current = Date.now() + 2500; 
+  }, [logDebug]);
 
   useEffect(() => {
+    logDebug('ROOM_JOINED', { roomId, userId });
+    
     const channel = supabase.channel(`room:${roomId}`, {
-      config: {
-        presence: { key: userId },
-        broadcast: { self: false },
-      },
+      config: { presence: { key: userId }, broadcast: { self: false } },
     });
 
     channel.on('presence', { event: 'sync' }, () => {
       const state = channel.presenceState();
-      const devices: PresenceState[] = Object.values(state)
-        .flat()
-        .map((p: any) => ({
-          id: p.id,
-          isHost: p.isHost,
-          joinedAt: p.joinedAt,
-          ping: p.ping,
-          os: p.os || 'Unknown',
-          browser: p.browser || 'Unknown',
-          syncStatus: p.syncStatus || 'unsynced',
-          latency: p.latency || 0,
-          lastSyncDelta: p.lastSyncDelta || 0,
-        }));
+      const devices: PresenceState[] = Object.values(state).flat().map((p: any) => ({
+        id: p.id, isHost: p.isHost, joinedAt: p.joinedAt, ping: p.ping, os: p.os || 'Unknown', browser: p.browser || 'Unknown', syncStatus: p.syncStatus || 'unsynced', latency: p.latency || 0, lastSyncDelta: p.lastSyncDelta || 0,
+      }));
       setConnectedDevices(devices);
     });
 
-    // 🏆 THE NEW EXACT-TIME SYNC LOGIC
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: any }) => {
       if (isHost) return;
-
-      // Ignore updates if we just jumped to let the player buffer
       if (Date.now() < ignoreSyncUntilRef.current) return;
-
       if (payload.videoId && payload.videoId !== currentVideoIdRef.current) {
         requestSync();
         return;
@@ -167,38 +150,33 @@ export const useSyncEngine = ({
       let newStatus: SyncStatus = 'synced';
 
       if (payload.isPlaying) {
-        // Hardware latency compensators
         let hardwareOffset = 0;
         if (deviceInfo.current.os === 'iOS') hardwareOffset = 0.015; 
         if (deviceInfo.current.os === 'Android') hardwareOffset = 0.040; 
 
-        // Calculate exact target time using the UTC offset
         const expectedVideoTime = payload.startVideoTime + ((networkTime - payload.startNetworkTime) / 1000) - hardwareOffset;
         const localTime = handlersRef.current.getCurrentTime();
-        
         const drift = expectedVideoTime - localTime;
         const absDrift = Math.abs(drift);
+        
         setLastSyncDelta(Math.round(absDrift * 1000));
 
-        // If drift exceeds 500ms, jump EXACTLY to the calculated time
+        logDebug('SYNC_EVALUATION', {
+          payload, localTime, expectedVideoTime, drift, absDrift, clockOffset: clockOffsetRef.current
+        });
+
         if (absDrift > 0.5) { 
-          safeSeek(expectedVideoTime);
+          safeSeek(expectedVideoTime, 'Drift exceeded 500ms');
           newStatus = 'syncing';
         }
 
-        handlersRef.current.setPlaybackRate(1); // Enforce normal speed
-
-        if (handlersRef.current.getPlayerState() !== 1) {
-          handlersRef.current.play();
-        }
+        handlersRef.current.setPlaybackRate(1);
+        if (handlersRef.current.getPlayerState() !== 1) handlersRef.current.play();
       } else {
-        // Handle Pauses
-        if (handlersRef.current.getPlayerState() === 1) {
-          handlersRef.current.pause();
-        }
+        if (handlersRef.current.getPlayerState() === 1) handlersRef.current.pause();
         const localTime = handlersRef.current.getCurrentTime();
         if (Math.abs(localTime - payload.startVideoTime) > 0.5) {
-          safeSeek(payload.startVideoTime);
+          safeSeek(payload.startVideoTime, 'Host Paused - Drift correction');
         }
         setLastSyncDelta(0);
       }
@@ -209,22 +187,16 @@ export const useSyncEngine = ({
 
     channel.on('broadcast', { event: 'sync_request' }, () => {
       if (!isHost) return;
-      channel.send({
-        type: 'broadcast',
-        event: 'sync',
-        payload: playbackEpochRef.current,
-      });
+      channel.send({ type: 'broadcast', event: 'sync', payload: playbackEpochRef.current });
     });
 
-    channel.on('broadcast', { event: 'queue_update' }, ({ payload }) => { 
-      if (!isHost && payload) handlersRef.current.onQueueUpdate?.(payload as QueueState); 
-    });
+    channel.on('broadcast', { event: 'queue_update' }, ({ payload }) => { if (!isHost && payload) handlersRef.current.onQueueUpdate?.(payload as QueueState); });
 
     channel.on('broadcast', { event: 'video_change' }, ({ payload }: { payload: any }) => {
       if (!isHost && payload.videoId && payload.videoTitle && payload.videoThumbnail) {
         currentVideoIdRef.current = payload.videoId;
         handlersRef.current.onVideoChange?.(payload.videoId, payload.videoTitle, payload.videoThumbnail);
-        safeSeek(0);
+        safeSeek(0, 'New Video Started');
         setSyncStatus('syncing');
         syncStatusRef.current = 'syncing';
       }
@@ -232,11 +204,7 @@ export const useSyncEngine = ({
 
     channel.on('broadcast', { event: 'ping' }, ({ payload }) => {
       if (isHost && payload.senderId !== userId) {
-        channel.send({
-          type: 'broadcast',
-          event: 'pong',
-          payload: { timestamp: payload.timestamp, hostTime: Date.now(), targetId: payload.senderId },
-        });
+        channel.send({ type: 'broadcast', event: 'pong', payload: { timestamp: payload.timestamp, hostTime: Date.now(), targetId: payload.senderId } });
       }
     });
 
@@ -255,58 +223,35 @@ export const useSyncEngine = ({
           clockOffsetRef.current = clockOffsetRef.current * 0.8 + offset * 0.2;
           shouldUpdate = true;
         }
+
+        logDebug('PONG_PROCESSED', { rtt, calculatedOffset: offset, appliedOffset: clockOffsetRef.current, accepted: shouldUpdate });
         
         setLatency(rtt);
         latencyRef.current = rtt;
         
         if (shouldUpdate) {
-           channel.track({
-            id: userId,
-            isHost,
-            joinedAt: Date.now(),
-            os: deviceInfo.current.os,
-            browser: deviceInfo.current.browser,
-            syncStatus: syncStatusRef.current,
-            latency: rtt,
-            lastSyncDelta: 0
-          });
+           channel.track({ id: userId, isHost, joinedAt: Date.now(), os: deviceInfo.current.os, browser: deviceInfo.current.browser, syncStatus: syncStatusRef.current, latency: rtt, lastSyncDelta: 0 });
         }
       }
     });
 
     channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
-        await channel.track({
-          id: userId,
-          isHost,
-          joinedAt: Date.now(),
-          os: deviceInfo.current.os,
-          browser: deviceInfo.current.browser,
-          syncStatus: isHost ? 'synced' : 'unsynced',
-          latency: 0,
-          lastSyncDelta: 0,
-        });
-        
+        await channel.track({ id: userId, isHost, joinedAt: Date.now(), os: deviceInfo.current.os, browser: deviceInfo.current.browser, syncStatus: isHost ? 'synced' : 'unsynced', latency: 0, lastSyncDelta: 0 });
         if (!isHost) {
           let pings = 0;
           const interval = setInterval(() => {
-             if (pings++ < 8) {
-                channel.send({ type: 'broadcast', event: 'ping', payload: { timestamp: Date.now(), senderId: userId } });
-             } else {
-                clearInterval(interval);
-                channel.send({ type: 'broadcast', event: 'sync_request', payload: { senderId: userId } });
-             }
+             if (pings++ < 8) channel.send({ type: 'broadcast', event: 'ping', payload: { timestamp: Date.now(), senderId: userId } });
+             else { clearInterval(interval); channel.send({ type: 'broadcast', event: 'sync_request', payload: { senderId: userId } }); }
           }, 400);
         }
       }
     });
 
     channelRef.current = channel;
-
     return () => { channel.unsubscribe(); };
-  }, [roomId, userId, isHost]);
+  }, [roomId, userId, isHost, logDebug, safeSeek]);
 
-  // Host Broadcast Loop: Checks for state/scrub changes and updates the Epoch
   useEffect(() => {
     if (!isHost || !channelRef.current) return;
     const interval = setInterval(() => {
@@ -317,80 +262,46 @@ export const useSyncEngine = ({
 
       if (isPlaying) {
         const expectedTime = playbackEpochRef.current.startVideoTime + ((networkTime - playbackEpochRef.current.startNetworkTime) / 1000);
-        // If the host scrubbed/skipped, recalculate the exact Start Time Epoch
         if (!playbackEpochRef.current.isPlaying || Math.abs(expectedTime - currentTime) > 0.5) {
-           playbackEpochRef.current = {
-             isPlaying: true,
-             startNetworkTime: networkTime,
-             startVideoTime: currentTime,
-             videoId: currentVideoIdRef.current
-           };
+           playbackEpochRef.current = { isPlaying: true, startNetworkTime: networkTime, startVideoTime: currentTime, videoId: currentVideoIdRef.current };
+           logDebug('HOST_EPOCH_UPDATED', playbackEpochRef.current);
         }
       } else {
          if (playbackEpochRef.current.isPlaying || Math.abs(playbackEpochRef.current.startVideoTime - currentTime) > 0.5) {
-           playbackEpochRef.current = {
-             isPlaying: false,
-             startNetworkTime: networkTime,
-             startVideoTime: currentTime,
-             videoId: currentVideoIdRef.current
-           };
+           playbackEpochRef.current = { isPlaying: false, startNetworkTime: networkTime, startVideoTime: currentTime, videoId: currentVideoIdRef.current };
+           logDebug('HOST_EPOCH_UPDATED', playbackEpochRef.current);
          }
       }
 
-      channelRef.current?.send({
-        type: 'broadcast',
-        event: 'sync',
-        payload: playbackEpochRef.current,
-      });
+      channelRef.current?.send({ type: 'broadcast', event: 'sync', payload: playbackEpochRef.current });
     }, 1000);
     return () => clearInterval(interval);
-  }, [isHost]);
+  }, [isHost, logDebug]);
 
   const broadcastPlay = useCallback(() => { 
     if (!isHost) return;
-    playbackEpochRef.current = {
-      isPlaying: true,
-      startNetworkTime: Date.now() + clockOffsetRef.current,
-      startVideoTime: handlersRef.current.getCurrentTime(),
-      videoId: currentVideoIdRef.current
-    };
+    playbackEpochRef.current = { isPlaying: true, startNetworkTime: Date.now() + clockOffsetRef.current, startVideoTime: handlersRef.current.getCurrentTime(), videoId: currentVideoIdRef.current };
+    logDebug('HOST_BROADCAST_PLAY', playbackEpochRef.current);
     channelRef.current?.send({ type: 'broadcast', event: 'sync', payload: playbackEpochRef.current }); 
-  }, [isHost]);
+  }, [isHost, logDebug]);
 
   const broadcastPause = useCallback(() => { 
     if (!isHost) return;
-    playbackEpochRef.current = {
-      isPlaying: false,
-      startNetworkTime: Date.now() + clockOffsetRef.current,
-      startVideoTime: handlersRef.current.getCurrentTime(),
-      videoId: currentVideoIdRef.current
-    };
+    playbackEpochRef.current = { isPlaying: false, startNetworkTime: Date.now() + clockOffsetRef.current, startVideoTime: handlersRef.current.getCurrentTime(), videoId: currentVideoIdRef.current };
+    logDebug('HOST_BROADCAST_PAUSE', playbackEpochRef.current);
     channelRef.current?.send({ type: 'broadcast', event: 'sync', payload: playbackEpochRef.current }); 
-  }, [isHost]);
+  }, [isHost, logDebug]);
 
   const broadcastVideoChange = useCallback((videoId: string, title: string, thumbnail: string) => {
     currentVideoIdRef.current = videoId;
-    playbackEpochRef.current = {
-      isPlaying: true, 
-      startNetworkTime: Date.now() + clockOffsetRef.current,
-      startVideoTime: 0,
-      videoId
-    };
-    channelRef.current?.send({
-      type: 'broadcast',
-      event: 'video_change',
-      payload: { type: 'video_change', videoId, videoTitle: title, videoThumbnail: thumbnail },
-    });
-  }, []);
+    playbackEpochRef.current = { isPlaying: true, startNetworkTime: Date.now() + clockOffsetRef.current, startVideoTime: 0, videoId };
+    logDebug('HOST_BROADCAST_VIDEO_CHANGE', playbackEpochRef.current);
+    channelRef.current?.send({ type: 'broadcast', event: 'video_change', payload: { type: 'video_change', videoId, videoTitle: title, videoThumbnail: thumbnail } });
+  }, [logDebug]);
 
   const forceResync = useCallback(() => { 
     if (!isHost || !channelRef.current) return;
-    playbackEpochRef.current = {
-      isPlaying: handlersRef.current.getPlayerState() === 1,
-      startNetworkTime: Date.now() + clockOffsetRef.current,
-      startVideoTime: handlersRef.current.getCurrentTime(),
-      videoId: currentVideoIdRef.current
-    };
+    playbackEpochRef.current = { isPlaying: handlersRef.current.getPlayerState() === 1, startNetworkTime: Date.now() + clockOffsetRef.current, startVideoTime: handlersRef.current.getCurrentTime(), videoId: currentVideoIdRef.current };
     channelRef.current.send({ type: 'broadcast', event: 'sync', payload: playbackEpochRef.current }); 
   }, [isHost]);
 
@@ -398,18 +309,7 @@ export const useSyncEngine = ({
   const setCurrentVideoId = useCallback((videoId: string) => { currentVideoIdRef.current = videoId; }, []);
 
   return {
-    connectedDevices,
-    latency,
-    syncStatus,
-    lastSyncDelta,
-    broadcastPlay,
-    broadcastPause,
-    broadcastVideoChange,
-    broadcastQueueUpdate,
-    forceResync,
-    manualResync,
-    measureLatency,
-    deviceInfo: deviceInfo.current,
-    setCurrentVideoId,
+    connectedDevices, latency, syncStatus, lastSyncDelta, broadcastPlay, broadcastPause, broadcastVideoChange, broadcastQueueUpdate, forceResync, manualResync, measureLatency, downloadLogs, // <-- EXPORTED DOWNLOAD FUNCTION
+    deviceInfo: deviceInfo.current, setCurrentVideoId,
   };
 };
