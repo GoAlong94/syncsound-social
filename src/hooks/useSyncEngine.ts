@@ -122,8 +122,8 @@ export const useSyncEngine = ({
       catchupTimeoutRef.current = null;
     }
     handlersRef.current.seekTo(time);
-    handlersRef.current.play(); // Force play after seeking
-    ignoreSyncUntilRef.current = Date.now() + 2500; // Allow buffer to settle before evaluating again
+    handlersRef.current.play();
+    ignoreSyncUntilRef.current = Date.now() + 2500; 
   }, [logDebug]);
 
   useEffect(() => {
@@ -154,7 +154,6 @@ export const useSyncEngine = ({
       let newStatus: SyncStatus = 'synced';
 
       if (payload.isPlaying) {
-        // ONLY bypass drift evaluation if we are actively buffering a previous correction
         if (Date.now() < ignoreSyncUntilRef.current) return;
 
         let hardwareOffset = 0;
@@ -172,24 +171,22 @@ export const useSyncEngine = ({
           localTime, expectedVideoTime, drift, absDrift, clockOffset: clockOffsetRef.current
         });
 
-        // TIGHT 250ms TOLERANCE
+        // Tightened tolerance to 250ms
         if (absDrift > 0.25) { 
           if (drift > 0) {
              // 🔴 WE ARE BEHIND: Forward-Seek Compensation
-             // We calculate how much time we will lose to the spinning loading wheel.
-             // We seek into the future so that when buffering finishes, we land exactly on the Host's time.
-             const bufferPenalty = Math.min(Math.max(absDrift, 0.3), 0.8);
+             // We add the exact drift amount to our target seek time to negate the spinning loading wheel
+             const bufferPenalty = Math.min(Math.max(absDrift, 0.2), 0.8);
              const targetTime = expectedVideoTime + bufferPenalty;
-             safeSeek(targetTime, `Forward-Seek: Behind by ${absDrift.toFixed(2)}s`);
+             safeSeek(targetTime, `Forward-Seek: Behind by ${absDrift.toFixed(3)}s`);
           } else {
              // 🟢 WE ARE AHEAD: Pause Catch-up
-             // We pause briefly to let the Host time naturally catch up to our local time.
-             logDebug('PAUSE_CATCHUP', { reason: `Ahead by ${absDrift.toFixed(2)}s` });
+             logDebug('PAUSE_CATCHUP', { reason: `Ahead by ${absDrift.toFixed(3)}s` });
              
              if (catchupTimeoutRef.current) clearTimeout(catchupTimeoutRef.current);
              handlersRef.current.pause();
              
-             ignoreSyncUntilRef.current = Date.now() + (absDrift * 1000) + 1500; // Ignore evaluations while catching up
+             ignoreSyncUntilRef.current = Date.now() + (absDrift * 1000) + 1500; 
              
              catchupTimeoutRef.current = setTimeout(() => {
                 handlersRef.current.play();
@@ -205,7 +202,6 @@ export const useSyncEngine = ({
           handlersRef.current.play();
         }
       } else {
-        // Handle Host Pauses immediately (Bypasses ignoreSync window)
         if (catchupTimeoutRef.current) {
            clearTimeout(catchupTimeoutRef.current);
            catchupTimeoutRef.current = null;
