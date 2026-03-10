@@ -141,7 +141,7 @@ export const useSyncEngine = ({
       setConnectedDevices(devices);
     });
 
-    // 🏆 THE NEW FORWARD-SEEK EXACT-TIME SYNC LOGIC
+    // 🏆 THE REFINED PRECISION SYNC LOGIC
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: any }) => {
       if (isHost) return;
       
@@ -157,7 +157,8 @@ export const useSyncEngine = ({
         if (Date.now() < ignoreSyncUntilRef.current) return;
 
         let hardwareOffset = 0;
-        if (deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'macOS') hardwareOffset = 0.040; 
+        if (deviceInfo.current.os === 'iOS') hardwareOffset = 0.050; 
+        if (deviceInfo.current.os === 'macOS') hardwareOffset = 0.020;
         if (deviceInfo.current.os === 'Android') hardwareOffset = 0.080; 
 
         const expectedVideoTime = payload.startVideoTime + ((networkTime - payload.startNetworkTime) / 1000) - hardwareOffset;
@@ -171,27 +172,32 @@ export const useSyncEngine = ({
           localTime, expectedVideoTime, drift, absDrift, clockOffset: clockOffsetRef.current
         });
 
-        // Tightened tolerance to 250ms
-        if (absDrift > 0.25) { 
+        // 🎯 TIGHTENED TO 100ms (0.10s) TOLERANCE
+        if (absDrift > 0.10) { 
           if (drift > 0) {
-             // 🔴 WE ARE BEHIND: Forward-Seek Compensation
-             // We add the exact drift amount to our target seek time to negate the spinning loading wheel
-             const bufferPenalty = Math.min(Math.max(absDrift, 0.2), 0.8);
+             // 🔴 BEHIND: Static Forward-Seek
+             // It takes ~250ms to buffer. We seek exactly 250ms ahead of the host.
+             const bufferPenalty = 0.250; 
              const targetTime = expectedVideoTime + bufferPenalty;
              safeSeek(targetTime, `Forward-Seek: Behind by ${absDrift.toFixed(3)}s`);
           } else {
-             // 🟢 WE ARE AHEAD: Pause Catch-up
-             logDebug('PAUSE_CATCHUP', { reason: `Ahead by ${absDrift.toFixed(3)}s` });
+             // 🟢 AHEAD: Pause Catch-up
+             // Deduct 50ms because the play() command itself takes ~50ms to execute.
+             const pauseTimeMs = (absDrift * 1000) - 50; 
              
-             if (catchupTimeoutRef.current) clearTimeout(catchupTimeoutRef.current);
-             handlersRef.current.pause();
-             
-             ignoreSyncUntilRef.current = Date.now() + (absDrift * 1000) + 1500; 
-             
-             catchupTimeoutRef.current = setTimeout(() => {
-                handlersRef.current.play();
-                catchupTimeoutRef.current = null;
-             }, absDrift * 1000);
+             if (pauseTimeMs > 20) {
+                 logDebug('PAUSE_CATCHUP', { reason: `Ahead by ${absDrift.toFixed(3)}s` });
+                 
+                 if (catchupTimeoutRef.current) clearTimeout(catchupTimeoutRef.current);
+                 handlersRef.current.pause();
+                 
+                 ignoreSyncUntilRef.current = Date.now() + pauseTimeMs + 1000; 
+                 
+                 catchupTimeoutRef.current = setTimeout(() => {
+                    handlersRef.current.play();
+                    catchupTimeoutRef.current = null;
+                 }, pauseTimeMs);
+             }
           }
           newStatus = 'syncing';
         }
@@ -210,7 +216,7 @@ export const useSyncEngine = ({
           handlersRef.current.pause();
         }
         const localTime = handlersRef.current.getCurrentTime();
-        if (Math.abs(localTime - payload.startVideoTime) > 0.5) {
+        if (Math.abs(localTime - payload.startVideoTime) > 0.1) {
           handlersRef.current.seekTo(payload.startVideoTime); 
         }
         setLastSyncDelta(0);
