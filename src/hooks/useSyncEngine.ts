@@ -54,6 +54,7 @@ export const useSyncEngine = ({
   const ignoreSyncUntilRef = useRef<number>(0);
   const minRttRef = useRef<number>(9999);
   const wakeLockRef = useRef<any>(null);
+  const catchupTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // --- DEBUG LOGGER ---
   const syncLogs = useRef<any[]>([]);
@@ -65,7 +66,6 @@ export const useSyncEngine = ({
       deviceInfo: deviceInfo.current,
       ...data
     });
-    // Keep array from growing infinitely and crashing mobile browsers
     if (syncLogs.current.length > 2000) syncLogs.current.shift();
   }, [isHost]);
 
@@ -78,7 +78,6 @@ export const useSyncEngine = ({
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
   }, [isHost, userId]);
-  // ---------------------
 
   const handlersRef = useRef({ getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate });
   useEffect(() => { handlersRef.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; });
@@ -88,8 +87,7 @@ export const useSyncEngine = ({
   useEffect(() => {
     const requestWakeLock = async () => {
       if ('wakeLock' in navigator && !wakeLockRef.current) {
-        try { wakeLockRef.current = await (navigator as any).wakeLock.request('screen'); } 
-        catch (err) {}
+        try { wakeLockRef.current = await (navigator as any).wakeLock.request('screen'); } catch (err) {}
       }
     };
     requestWakeLock();
@@ -119,8 +117,13 @@ export const useSyncEngine = ({
 
   const safeSeek = useCallback((time: number, reason: string) => {
     logDebug('SAFE_SEEK_EXECUTED', { targetTime: time, reason });
+    if (catchupTimeoutRef.current) {
+      clearTimeout(catchupTimeoutRef.current);
+      catchupTimeoutRef.current = null;
+    }
     handlersRef.current.seekTo(time);
-    ignoreSyncUntilRef.current = Date.now() + 2500; 
+    handlersRef.current.play(); // Force play after seeking
+    ignoreSyncUntilRef.current = Date.now() + 2500; // Allow buffer to settle before evaluating again
   }, [logDebug]);
 
   useEffect(() => {
@@ -138,9 +141,10 @@ export const useSyncEngine = ({
       setConnectedDevices(devices);
     });
 
+    // 🏆 THE NEW FORWARD-SEEK EXACT-TIME SYNC LOGIC
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: any }) => {
       if (isHost) return;
-      if (Date.now() < ignoreSyncUntilRef.current) return;
+      
       if (payload.videoId && payload.videoId !== currentVideoIdRef.current) {
         requestSync();
         return;
@@ -150,33 +154,68 @@ export const useSyncEngine = ({
       let newStatus: SyncStatus = 'synced';
 
       if (payload.isPlaying) {
+        // ONLY bypass drift evaluation if we are actively buffering a previous correction
+        if (Date.now() < ignoreSyncUntilRef.current) return;
+
         let hardwareOffset = 0;
-        if (deviceInfo.current.os === 'iOS') hardwareOffset = 0.015; 
-        if (deviceInfo.current.os === 'Android') hardwareOffset = 0.040; 
+        if (deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'macOS') hardwareOffset = 0.040; 
+        if (deviceInfo.current.os === 'Android') hardwareOffset = 0.080; 
 
         const expectedVideoTime = payload.startVideoTime + ((networkTime - payload.startNetworkTime) / 1000) - hardwareOffset;
         const localTime = handlersRef.current.getCurrentTime();
+        
         const drift = expectedVideoTime - localTime;
         const absDrift = Math.abs(drift);
-        
         setLastSyncDelta(Math.round(absDrift * 1000));
 
         logDebug('SYNC_EVALUATION', {
-          payload, localTime, expectedVideoTime, drift, absDrift, clockOffset: clockOffsetRef.current
+          localTime, expectedVideoTime, drift, absDrift, clockOffset: clockOffsetRef.current
         });
 
-        if (absDrift > 0.5) { 
-          safeSeek(expectedVideoTime, 'Drift exceeded 500ms');
+        // TIGHT 250ms TOLERANCE
+        if (absDrift > 0.25) { 
+          if (drift > 0) {
+             // 🔴 WE ARE BEHIND: Forward-Seek Compensation
+             // We calculate how much time we will lose to the spinning loading wheel.
+             // We seek into the future so that when buffering finishes, we land exactly on the Host's time.
+             const bufferPenalty = Math.min(Math.max(absDrift, 0.3), 0.8);
+             const targetTime = expectedVideoTime + bufferPenalty;
+             safeSeek(targetTime, `Forward-Seek: Behind by ${absDrift.toFixed(2)}s`);
+          } else {
+             // 🟢 WE ARE AHEAD: Pause Catch-up
+             // We pause briefly to let the Host time naturally catch up to our local time.
+             logDebug('PAUSE_CATCHUP', { reason: `Ahead by ${absDrift.toFixed(2)}s` });
+             
+             if (catchupTimeoutRef.current) clearTimeout(catchupTimeoutRef.current);
+             handlersRef.current.pause();
+             
+             ignoreSyncUntilRef.current = Date.now() + (absDrift * 1000) + 1500; // Ignore evaluations while catching up
+             
+             catchupTimeoutRef.current = setTimeout(() => {
+                handlersRef.current.play();
+                catchupTimeoutRef.current = null;
+             }, absDrift * 1000);
+          }
           newStatus = 'syncing';
         }
 
         handlersRef.current.setPlaybackRate(1);
-        if (handlersRef.current.getPlayerState() !== 1) handlersRef.current.play();
+
+        if (handlersRef.current.getPlayerState() !== 1 && newStatus !== 'syncing') {
+          handlersRef.current.play();
+        }
       } else {
-        if (handlersRef.current.getPlayerState() === 1) handlersRef.current.pause();
+        // Handle Host Pauses immediately (Bypasses ignoreSync window)
+        if (catchupTimeoutRef.current) {
+           clearTimeout(catchupTimeoutRef.current);
+           catchupTimeoutRef.current = null;
+        }
+        if (handlersRef.current.getPlayerState() === 1) {
+          handlersRef.current.pause();
+        }
         const localTime = handlersRef.current.getCurrentTime();
         if (Math.abs(localTime - payload.startVideoTime) > 0.5) {
-          safeSeek(payload.startVideoTime, 'Host Paused - Drift correction');
+          handlersRef.current.seekTo(payload.startVideoTime); 
         }
         setLastSyncDelta(0);
       }
@@ -249,7 +288,10 @@ export const useSyncEngine = ({
     });
 
     channelRef.current = channel;
-    return () => { channel.unsubscribe(); };
+    return () => { 
+        if (catchupTimeoutRef.current) clearTimeout(catchupTimeoutRef.current);
+        channel.unsubscribe(); 
+    };
   }, [roomId, userId, isHost, logDebug, safeSeek]);
 
   useEffect(() => {
@@ -309,7 +351,7 @@ export const useSyncEngine = ({
   const setCurrentVideoId = useCallback((videoId: string) => { currentVideoIdRef.current = videoId; }, []);
 
   return {
-    connectedDevices, latency, syncStatus, lastSyncDelta, broadcastPlay, broadcastPause, broadcastVideoChange, broadcastQueueUpdate, forceResync, manualResync, measureLatency, downloadLogs, // <-- EXPORTED DOWNLOAD FUNCTION
+    connectedDevices, latency, syncStatus, lastSyncDelta, broadcastPlay, broadcastPause, broadcastVideoChange, broadcastQueueUpdate, forceResync, manualResync, measureLatency, downloadLogs,
     deviceInfo: deviceInfo.current, setCurrentVideoId,
   };
 };
