@@ -200,6 +200,14 @@ const Room = () => {
         </button>
 
         <div className="flex items-center gap-3">
+          {/* ----- ADDED DEBUG BUTTON ----- */}
+          <button 
+            onClick={downloadLogs} 
+            className="px-3 py-2 text-xs font-mono bg-slate-800 text-slate-300 rounded-lg border border-slate-600 hover:bg-slate-700 transition"
+          >
+            Download Logs
+          </button>
+          {/* ------------------------------- */}
           {/* Room Code */}
           <div className="flex items-center gap-2 px-4 py-2 rounded-xl glass">
             {isHost && <Crown className="w-4 h-4 text-sync-warning" />}
