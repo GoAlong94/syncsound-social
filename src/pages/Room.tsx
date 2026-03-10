@@ -67,6 +67,7 @@ const Room = () => {
     forceResync,
     manualResync,
     measureLatency,
+    downloadLogs, // <---- ADD THIS HERE
     deviceInfo,
     setCurrentVideoId,
   } = useSyncEngine({
