@@ -56,10 +56,13 @@ export const useSyncEngine = ({
   const wakeLockRef = useRef<any>(null);
   const catchupTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // AI Self-Calibrating Buffer Penalty - STARTS LOWER, NEVER RESETS
+  // 🧠 AI Self-Calibrating Tools
   const bufferPenaltyRef = useRef<number>(deviceInfo.current.os === 'iOS' ? 0.400 : 0.200);
   const lastSeekTimeRef = useRef<number>(0);
   const lastBroadcastTimeRef = useRef<number>(0);
+  const consecutiveMissesRef = useRef<number>(0); // Outlier Filter
+  const wasPlayingRef = useRef<boolean>(false); // Track Pause/Resume states
+  const currentPlaybackRateRef = useRef<number>(1); // Track soft-catchups
 
   // --- DEBUG LOGGER ---
   const syncLogs = useRef<any[]>([]);
@@ -129,7 +132,6 @@ export const useSyncEngine = ({
     
     handlersRef.current.seekTo(time);
     
-    // Only force play if the Host epoch says the room is actually playing
     if (playbackEpochRef.current.isPlaying) {
        handlersRef.current.play();
     } else {
@@ -154,10 +156,10 @@ export const useSyncEngine = ({
       setConnectedDevices(devices);
     });
 
+    // 🏆 ULTIMATE 10ms BEAT-MATCHING LOGIC
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: any }) => {
       if (isHost) return;
       
-      // Keep epoch updated for safeSeek reference
       playbackEpochRef.current = payload;
 
       if (payload.videoId && payload.videoId !== currentVideoIdRef.current) {
@@ -168,7 +170,11 @@ export const useSyncEngine = ({
       const networkTime = Date.now() + clockOffsetRef.current;
       let newStatus: SyncStatus = 'synced';
 
-      if (payload.isPlaying) {
+      const isPlayingNow = payload.isPlaying;
+      const justResumed = isPlayingNow && !wasPlayingRef.current;
+      wasPlayingRef.current = isPlayingNow;
+
+      if (isPlayingNow) {
         if (Date.now() < ignoreSyncUntilRef.current) return;
 
         let hardwareOffset = 0;
@@ -187,48 +193,76 @@ export const useSyncEngine = ({
           localTime, expectedVideoTime, drift, absDrift, penalty: bufferPenaltyRef.current
         });
 
-        // 🎯 EXTREME 10ms (0.010s) TOLERANCE
+        // 🚀 1. Instant-Penalty on Resume
+        if (justResumed && absDrift > 0.050) {
+             const targetTime = expectedVideoTime + bufferPenaltyRef.current;
+             safeSeek(targetTime, `Instant Resume Forward-Seek. Penalty: ${bufferPenaltyRef.current.toFixed(3)}s`);
+             return; 
+        }
+
+        // 🎯 2. Hyper-Tight 10ms (0.010s) Tolerance
         if (absDrift > 0.010) { 
+          consecutiveMissesRef.current += 1;
+
           if (drift > 0) {
-             // 🔴 BEHIND: Gentle Adaptive PID Forward-Seek
-             if (Date.now() - lastSeekTimeRef.current < 4000) {
-                 bufferPenaltyRef.current += (drift * 0.5); // Smoother learning curve
+             // 🔴 BEHIND: Outlier-Filtered PID Learning
+             if (Date.now() - lastSeekTimeRef.current < 4000 && consecutiveMissesRef.current >= 2) {
+                 bufferPenaltyRef.current += (drift * 0.5); 
                  bufferPenaltyRef.current = Math.min(bufferPenaltyRef.current, 1.0); 
+                 consecutiveMissesRef.current = 0; 
              }
 
              const targetTime = expectedVideoTime + bufferPenaltyRef.current;
              lastSeekTimeRef.current = Date.now();
              safeSeek(targetTime, `Forward-Seek: Behind by ${absDrift.toFixed(3)}s. Added Penalty: ${bufferPenaltyRef.current.toFixed(3)}s`);
           } else {
-             // 🟢 AHEAD: Micro Pause Catch-up
-             if (Date.now() - lastSeekTimeRef.current < 4000) {
-                 bufferPenaltyRef.current -= (absDrift * 0.5); // Soft penalty reduction
+             // 🟢 AHEAD: Outlier-Filtered PID Learning
+             if (Date.now() - lastSeekTimeRef.current < 4000 && consecutiveMissesRef.current >= 2) {
+                 bufferPenaltyRef.current -= (absDrift * 0.5); 
                  bufferPenaltyRef.current = Math.max(0.100, bufferPenaltyRef.current);
                  lastSeekTimeRef.current = 0; 
+                 consecutiveMissesRef.current = 0;
              }
 
-             const pauseTimeMs = Math.round(absDrift * 1000);
-             
-             if (pauseTimeMs >= 10) {
-                 logDebug('PAUSE_CATCHUP', { reason: `Ahead by ${absDrift.toFixed(3)}s`, pauseTimeMs });
-                 
-                 if (catchupTimeoutRef.current) clearTimeout(catchupTimeoutRef.current);
-                 handlersRef.current.pause();
-                 
-                 ignoreSyncUntilRef.current = Date.now() + pauseTimeMs + 500; 
-                 
-                 catchupTimeoutRef.current = setTimeout(() => {
-                    handlersRef.current.play();
-                    catchupTimeoutRef.current = null;
-                 }, pauseTimeMs);
+             // 🎧 3. Soft-Catchup for Micro-Leads (< 40ms)
+             if (absDrift <= 0.040) {
+                 logDebug('SOFT_CATCHUP', { reason: `Ahead by ${absDrift.toFixed(3)}s`, rate: 0.75 });
+                 if (currentPlaybackRateRef.current !== 0.75) {
+                     handlersRef.current.setPlaybackRate(0.75);
+                     currentPlaybackRateRef.current = 0.75;
+                 }
+                 // At 0.75x speed, video loses 0.25s of virtual time per 1s of real time
+                 const glideTimeMs = Math.min((absDrift / 0.25) * 1000, 500);
+                 ignoreSyncUntilRef.current = Date.now() + glideTimeMs;
+             } else {
+                 // Full Pause Catchup for larger leads
+                 const pauseTimeMs = Math.round(absDrift * 1000);
+                 if (pauseTimeMs >= 10) {
+                     logDebug('PAUSE_CATCHUP', { reason: `Ahead by ${absDrift.toFixed(3)}s`, pauseTimeMs });
+                     
+                     if (catchupTimeoutRef.current) clearTimeout(catchupTimeoutRef.current);
+                     handlersRef.current.pause();
+                     
+                     ignoreSyncUntilRef.current = Date.now() + pauseTimeMs + 500; 
+                     
+                     catchupTimeoutRef.current = setTimeout(() => {
+                        handlersRef.current.play();
+                        catchupTimeoutRef.current = null;
+                     }, pauseTimeMs);
+                 }
              }
           }
           newStatus = 'syncing';
+        } else {
+          // Perfectly Synced within 10ms!
+          consecutiveMissesRef.current = 0;
+          if (currentPlaybackRateRef.current !== 1) {
+              handlersRef.current.setPlaybackRate(1);
+              currentPlaybackRateRef.current = 1;
+          }
         }
 
-        handlersRef.current.setPlaybackRate(1);
-
-        if (handlersRef.current.getPlayerState() !== 1 && newStatus !== 'syncing') {
+        if (handlersRef.current.getPlayerState() !== 1 && newStatus !== 'syncing' && !catchupTimeoutRef.current) {
           handlersRef.current.play();
         }
       } else {
@@ -262,7 +296,7 @@ export const useSyncEngine = ({
       if (!isHost && payload.videoId && payload.videoTitle && payload.videoThumbnail) {
         currentVideoIdRef.current = payload.videoId;
         handlersRef.current.onVideoChange?.(payload.videoId, payload.videoTitle, payload.videoThumbnail);
-        // NOTE: Intentionally NOT resetting bufferPenaltyRef here! Calibration carries over to the new song.
+        // Penalty intentionally persists through video changes!
         safeSeek(0, 'New Video Started');
         setSyncStatus('syncing');
         syncStatusRef.current = 'syncing';
@@ -370,8 +404,6 @@ export const useSyncEngine = ({
 
   const broadcastVideoChange = useCallback((videoId: string, title: string, thumbnail: string) => {
     currentVideoIdRef.current = videoId;
-    
-    // Accurate state detection: Only tell everyone to play if the host is ACTUALLY playing right now.
     const isCurrentlyPlaying = handlersRef.current.getPlayerState() === 1;
     
     playbackEpochRef.current = { 
