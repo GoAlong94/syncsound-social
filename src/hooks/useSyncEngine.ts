@@ -56,6 +56,11 @@ export const useSyncEngine = ({
   const wakeLockRef = useRef<any>(null);
   const catchupTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // AI Self-Calibrating Buffer Penalty
+  const bufferPenaltyRef = useRef<number>(deviceInfo.current.os === 'iOS' ? 0.600 : 0.250);
+  const lastSeekTimeRef = useRef<number>(0);
+  const lastBroadcastTimeRef = useRef<number>(0); // Throttle for fast-polling
+
   // --- DEBUG LOGGER ---
   const syncLogs = useRef<any[]>([]);
   const logDebug = useCallback((event: string, data: any) => {
@@ -141,7 +146,7 @@ export const useSyncEngine = ({
       setConnectedDevices(devices);
     });
 
-    // 🏆 THE REFINED PRECISION SYNC LOGIC
+    // 🏆 EXTREME 10ms BEAT-MATCHING SYNC LOGIC
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: any }) => {
       if (isHost) return;
       
@@ -156,6 +161,7 @@ export const useSyncEngine = ({
       if (payload.isPlaying) {
         if (Date.now() < ignoreSyncUntilRef.current) return;
 
+        // Hardware speaker offsets
         let hardwareOffset = 0;
         if (deviceInfo.current.os === 'iOS') hardwareOffset = 0.050; 
         if (deviceInfo.current.os === 'macOS') hardwareOffset = 0.020;
@@ -169,29 +175,40 @@ export const useSyncEngine = ({
         setLastSyncDelta(Math.round(absDrift * 1000));
 
         logDebug('SYNC_EVALUATION', {
-          localTime, expectedVideoTime, drift, absDrift, clockOffset: clockOffsetRef.current
+          localTime, expectedVideoTime, drift, absDrift, penalty: bufferPenaltyRef.current
         });
 
-        // 🎯 TIGHTENED TO 100ms (0.10s) TOLERANCE
-        if (absDrift > 0.10) { 
+        // 🎯 HYPER-TIGHT 10ms (0.010s) TOLERANCE
+        if (absDrift > 0.010) { 
           if (drift > 0) {
-             // 🔴 BEHIND: Static Forward-Seek
-             // It takes ~250ms to buffer. We seek exactly 250ms ahead of the host.
-             const bufferPenalty = 0.250; 
-             const targetTime = expectedVideoTime + bufferPenalty;
-             safeSeek(targetTime, `Forward-Seek: Behind by ${absDrift.toFixed(3)}s`);
+             // 🔴 BEHIND: Adaptive PID Forward-Seek
+             if (Date.now() - lastSeekTimeRef.current < 4000) {
+                 bufferPenaltyRef.current += drift;
+                 bufferPenaltyRef.current = Math.min(bufferPenaltyRef.current, 1.2); 
+             }
+
+             const targetTime = expectedVideoTime + bufferPenaltyRef.current;
+             lastSeekTimeRef.current = Date.now();
+             safeSeek(targetTime, `Forward-Seek: Behind by ${absDrift.toFixed(3)}s. Added Penalty: ${bufferPenaltyRef.current.toFixed(3)}s`);
           } else {
-             // 🟢 AHEAD: Pause Catch-up
-             // Deduct 50ms because the play() command itself takes ~50ms to execute.
-             const pauseTimeMs = (absDrift * 1000) - 50; 
+             // 🟢 AHEAD: Perfect Pause Catch-up
+             if (Date.now() - lastSeekTimeRef.current < 4000) {
+                 bufferPenaltyRef.current -= absDrift;
+                 bufferPenaltyRef.current = Math.max(0.150, bufferPenaltyRef.current);
+                 lastSeekTimeRef.current = 0; 
+             }
+
+             // Minimal 5ms deduction to allow microscopic catchups
+             const pauseTimeMs = Math.max(0, (absDrift * 1000) - 5); 
              
-             if (pauseTimeMs > 20) {
-                 logDebug('PAUSE_CATCHUP', { reason: `Ahead by ${absDrift.toFixed(3)}s` });
+             // Trigger micro-pauses down to 5ms
+             if (pauseTimeMs > 5) {
+                 logDebug('PAUSE_CATCHUP', { reason: `Ahead by ${absDrift.toFixed(3)}s`, pauseTimeMs });
                  
                  if (catchupTimeoutRef.current) clearTimeout(catchupTimeoutRef.current);
                  handlersRef.current.pause();
                  
-                 ignoreSyncUntilRef.current = Date.now() + pauseTimeMs + 1000; 
+                 ignoreSyncUntilRef.current = Date.now() + pauseTimeMs + 500; 
                  
                  catchupTimeoutRef.current = setTimeout(() => {
                     handlersRef.current.play();
@@ -208,6 +225,7 @@ export const useSyncEngine = ({
           handlersRef.current.play();
         }
       } else {
+        // HOST PAUSED
         if (catchupTimeoutRef.current) {
            clearTimeout(catchupTimeoutRef.current);
            catchupTimeoutRef.current = null;
@@ -216,7 +234,8 @@ export const useSyncEngine = ({
           handlersRef.current.pause();
         }
         const localTime = handlersRef.current.getCurrentTime();
-        if (Math.abs(localTime - payload.startVideoTime) > 0.1) {
+        // 🎯 10ms Snap-to-pause
+        if (Math.abs(localTime - payload.startVideoTime) > 0.010) {
           handlersRef.current.seekTo(payload.startVideoTime); 
         }
         setLastSyncDelta(0);
@@ -237,6 +256,7 @@ export const useSyncEngine = ({
       if (!isHost && payload.videoId && payload.videoTitle && payload.videoThumbnail) {
         currentVideoIdRef.current = payload.videoId;
         handlersRef.current.onVideoChange?.(payload.videoId, payload.videoTitle, payload.videoThumbnail);
+        bufferPenaltyRef.current = deviceInfo.current.os === 'iOS' ? 0.800 : 0.400; 
         safeSeek(0, 'New Video Started');
         setSyncStatus('syncing');
         syncStatusRef.current = 'syncing';
@@ -264,8 +284,6 @@ export const useSyncEngine = ({
           clockOffsetRef.current = clockOffsetRef.current * 0.8 + offset * 0.2;
           shouldUpdate = true;
         }
-
-        logDebug('PONG_PROCESSED', { rtt, calculatedOffset: offset, appliedOffset: clockOffsetRef.current, accepted: shouldUpdate });
         
         setLatency(rtt);
         latencyRef.current = rtt;
@@ -296,29 +314,39 @@ export const useSyncEngine = ({
     };
   }, [roomId, userId, isHost, logDebug, safeSeek]);
 
+  // INSTANT HOST EVENT DETECTION 
   useEffect(() => {
     if (!isHost || !channelRef.current) return;
+    
+    // Polling every 150ms instead of 1000ms for instant native Play/Pause response
     const interval = setInterval(() => {
       const currentTime = handlersRef.current.getCurrentTime();
       const playerState = handlersRef.current.getPlayerState();
       const networkTime = Date.now() + clockOffsetRef.current;
       const isPlaying = playerState === 1;
 
+      let stateChanged = false;
+
       if (isPlaying) {
         const expectedTime = playbackEpochRef.current.startVideoTime + ((networkTime - playbackEpochRef.current.startNetworkTime) / 1000);
         if (!playbackEpochRef.current.isPlaying || Math.abs(expectedTime - currentTime) > 0.5) {
            playbackEpochRef.current = { isPlaying: true, startNetworkTime: networkTime, startVideoTime: currentTime, videoId: currentVideoIdRef.current };
-           logDebug('HOST_EPOCH_UPDATED', playbackEpochRef.current);
+           stateChanged = true;
         }
       } else {
          if (playbackEpochRef.current.isPlaying || Math.abs(playbackEpochRef.current.startVideoTime - currentTime) > 0.5) {
            playbackEpochRef.current = { isPlaying: false, startNetworkTime: networkTime, startVideoTime: currentTime, videoId: currentVideoIdRef.current };
-           logDebug('HOST_EPOCH_UPDATED', playbackEpochRef.current);
+           stateChanged = true;
          }
       }
 
-      channelRef.current?.send({ type: 'broadcast', event: 'sync', payload: playbackEpochRef.current });
-    }, 1000);
+      const now = Date.now();
+      if (stateChanged || now - lastBroadcastTimeRef.current > 2500) {
+        channelRef.current?.send({ type: 'broadcast', event: 'sync', payload: playbackEpochRef.current });
+        lastBroadcastTimeRef.current = now;
+        if (stateChanged) logDebug('HOST_EPOCH_UPDATED', playbackEpochRef.current);
+      }
+    }, 150); 
     return () => clearInterval(interval);
   }, [isHost, logDebug]);
 
