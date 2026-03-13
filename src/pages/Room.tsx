@@ -11,7 +11,7 @@ import { DeviceCounter } from '@/components/DeviceCounter';
 import { VideoQueue } from '@/components/VideoQueue';
 import { DeviceDashboard } from '@/components/DeviceDashboard';
 import { JoinerStatusCard } from '@/components/JoinerStatusCard';
-import { useSyncEngine } from '@/hooks/useSyncEngine';
+import { useSyncEngine, ENGINE_VERSION } from '@/hooks/useSyncEngine';
 import { useVideoQueue } from '@/hooks/useVideoQueue';
 import { Button } from '@/components/ui/button';
 
@@ -45,7 +45,6 @@ const Room = () => {
     setVideoTitle(title);
     setVideoThumbnail(thumbnail);
     if (playerControlsRef.current) {
-      // Auto-play for already synced joiners
       if (isSynced && !isHost) {
         setTimeout(() => {
           playerControlsRef.current?.play();
@@ -69,6 +68,7 @@ const Room = () => {
     downloadLogs,
     deviceInfo,
     setCurrentVideoId,
+    reportPreloadReady
   } = useSyncEngine({
     roomId: roomId || '',
     isHost,
@@ -81,7 +81,6 @@ const Room = () => {
     getPlayerState: () => playerControlsRef.current?.getPlayerState() || -1,
     onVideoChange: handleVideoChange,
     onQueueUpdate: (queue) => {
-      // Sync queue for joiners
       syncQueue(queue);
     },
   });
@@ -103,7 +102,7 @@ const Room = () => {
       setVideoId(vid);
       setVideoTitle(title);
       setVideoThumbnail(thumb);
-      setCurrentVideoId(vid); // Track video ID for sync validation
+      setCurrentVideoId(vid); 
       
       if (isHost) {
         broadcastVideoChange(vid, title, thumb);
@@ -146,13 +145,6 @@ const Room = () => {
     }
   }, [manualResync]);
 
-  // Handle video end - advance queue
-  const handleVideoEnd = useCallback(() => {
-    if (isHost && hasNext) {
-      playNext();
-    }
-  }, [isHost, hasNext, playNext]);
-
   const copyRoomCode = async () => {
     if (roomId) {
       await navigator.clipboard.writeText(roomId);
@@ -180,7 +172,7 @@ const Room = () => {
     }
   };
 
-  // 🎯 Calculate the Next Video in Queue for the Phantom Pre-loader
+  // Find the next video for the Convoy Phantom Pre-loader
   const currentQueueIndex = queue.items.findIndex(item => item.id === videoId);
   const nextVideoId = (currentQueueIndex !== -1 && currentQueueIndex < queue.items.length - 1)
     ? queue.items[currentQueueIndex + 1].id
@@ -188,7 +180,6 @@ const Room = () => {
 
   return (
     <div className="min-h-screen flex flex-col p-4 md:p-6">
-      {/* Header */}
       <motion.header
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -203,8 +194,7 @@ const Room = () => {
         </button>
 
         <div className="flex items-center gap-3">
-          
-          {/* Scatter-Gather Log Download Button */}
+          {/* SCATTER-GATHER LOG DOWNLOAD BUTTON */}
           <Button
             variant="outline"
             size="sm"
@@ -215,7 +205,6 @@ const Room = () => {
             Get Logs
           </Button>
 
-          {/* Room Code */}
           <div className="flex items-center gap-2 px-4 py-2 rounded-xl glass">
             {isHost && <Crown className="w-4 h-4 text-sync-warning" />}
             <span className="text-foreground font-mono font-bold tracking-wider">
@@ -233,7 +222,6 @@ const Room = () => {
             </button>
           </div>
 
-          {/* Share Button */}
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -245,7 +233,6 @@ const Room = () => {
         </div>
       </motion.header>
 
-      {/* Device Counter */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -255,20 +242,23 @@ const Room = () => {
         <DeviceCounter devices={connectedDevices} latency={latency} />
       </motion.div>
 
-      {/* Main Content */}
       <div className="flex-1 flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto w-full">
-        {/* Left Column: Video + Controls */}
         <div className="flex-1 flex flex-col">
-          {/* Dual-Deck Video Player */}
+          
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.2 }}
-            className="mb-4"
+            className="mb-4 relative"
           >
+            {/* ABSOLUTE DEPLOYMENT VERIFICATION BUG */}
+            <div className="absolute -top-6 right-0 text-[10px] text-zinc-600 font-mono tracking-widest uppercase">
+               Engine: {ENGINE_VERSION}
+            </div>
+
             <VideoPlayer
               videoId={videoId}
-              nextVideoId={nextVideoId} // Powers the Phantom Deck B
+              nextVideoId={nextVideoId} 
               videoTitle={videoTitle}
               videoThumbnail={videoThumbnail}
               isHost={isHost}
@@ -277,38 +267,25 @@ const Room = () => {
               onPlay={handlePlay}
               onPause={handlePause}
               onPlayerReady={handlePlayerReady}
+              onPreloadReady={(vid) => reportPreloadReady?.(vid)} 
             />
           </motion.div>
 
-          {/* Host: Queue Controls */}
           {isHost && videoId && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="flex items-center justify-center gap-4 mb-4"
             >
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={playPrevious}
-                disabled={!hasPrevious}
-              >
-                <SkipBack className="w-4 h-4 mr-1" />
-                Previous
+              <Button variant="outline" size="sm" onClick={playPrevious} disabled={!hasPrevious}>
+                <SkipBack className="w-4 h-4 mr-1" /> Previous
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={playNext}
-                disabled={!hasNext}
-              >
-                Next
-                <SkipForward className="w-4 h-4 ml-1" />
+              <Button variant="outline" size="sm" onClick={playNext} disabled={!hasNext}>
+                Next <SkipForward className="w-4 h-4 ml-1" />
               </Button>
             </motion.div>
           )}
 
-          {/* Host: Search Bar */}
           {isHost && (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -316,19 +293,13 @@ const Room = () => {
               transition={{ delay: 0.3 }}
               className="mb-4"
             >
-              <YouTubeLinkInput 
-                onVideoSelect={handleVideoSelect}
-                disabled={isQueueFull}
-              />
+              <YouTubeLinkInput onVideoSelect={handleVideoSelect} disabled={isQueueFull} />
               {isQueueFull && (
-                <p className="text-xs text-sync-warning mt-2 text-center">
-                  Queue is full (max 10 videos)
-                </p>
+                <p className="text-xs text-sync-warning mt-2 text-center">Queue is full (max 10 videos)</p>
               )}
             </motion.div>
           )}
 
-          {/* Joiner: Sync Button */}
           <AnimatePresence>
             {!isHost && videoId && !isSynced && (
               <motion.div
@@ -342,88 +313,38 @@ const Room = () => {
             )}
           </AnimatePresence>
 
-          {/* Host Instructions */}
           {isHost && !videoId && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="text-center py-8"
-            >
-              <p className="text-muted-foreground">
-                Paste a YouTube link above to start the party.
-                <br />
-                Share the room code with friends to join!
-              </p>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-8">
+              <p className="text-muted-foreground">Paste a YouTube link above to start the party.</p>
             </motion.div>
           )}
 
-          {/* Joiner Waiting */}
           {!isHost && !videoId && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="text-center py-8"
-            >
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-8">
               <div className="inline-flex items-center gap-3 px-6 py-4 rounded-xl glass">
                 <div className="w-3 h-3 rounded-full bg-primary animate-pulse" />
-                <span className="text-muted-foreground">
-                  Waiting for host to select a video...
-                </span>
+                <span className="text-muted-foreground">Waiting for host to select a video...</span>
               </div>
             </motion.div>
           )}
         </div>
 
-        {/* Right Column: Queue + Device Info */}
         <div className="lg:w-80 space-y-4">
-          {/* Video Queue */}
           {(queue.items.length > 0 || isHost) && (
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.4 }}
-            >
-              <VideoQueue
-                queue={queue}
-                onRemove={removeFromQueue}
-                onPlay={playAtIndex}
-                onMove={moveItem}
-                isHost={isHost}
-              />
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.4 }}>
+              <VideoQueue queue={queue} onRemove={removeFromQueue} onPlay={playAtIndex} onMove={moveItem} isHost={isHost} />
             </motion.div>
           )}
 
-          {/* Host: Device Dashboard */}
           {isHost && (
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.5 }}
-            >
-              <DeviceDashboard
-                devices={connectedDevices}
-                currentUserId={userId}
-                onForceResync={forceResync}
-                onRefreshPing={measureLatency}
-              />
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.5 }}>
+              <DeviceDashboard devices={connectedDevices} currentUserId={userId} onForceResync={forceResync} onRefreshPing={measureLatency} />
             </motion.div>
           )}
 
-          {/* Joiner: Status Card */}
           {!isHost && isSynced && (
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.5 }}
-            >
-              <JoinerStatusCard
-                os={deviceInfo.os}
-                browser={deviceInfo.browser}
-                latency={latency}
-                syncStatus={syncStatus}
-                lastSyncDelta={lastSyncDelta}
-                onResync={manualResync}
-              />
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.5 }}>
+              <JoinerStatusCard os={deviceInfo.os} browser={deviceInfo.browser} latency={latency} syncStatus={syncStatus} lastSyncDelta={lastSyncDelta} onResync={manualResync} />
             </motion.div>
           )}
         </div>
