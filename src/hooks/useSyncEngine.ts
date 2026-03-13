@@ -130,7 +130,7 @@ export const useSyncEngine = ({
   const [latency, setLatency] = useState<number>(0);
   const [networkJitter, setNetworkJitter] = useState<number>(0);
   const [lastSyncDelta, setLastSyncDelta] = useState<number>(0);
-  const lastSyncDeltaRef = useRef<number>(0); // Ref used for broadcasting presence without re-renders
+  const lastSyncDeltaRef = useRef<number>(0); 
   
   const handlers = useRef({ getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate });
   useEffect(() => { handlers.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; });
@@ -158,19 +158,46 @@ export const useSyncEngine = ({
   const wasPlayingRef = useRef<boolean>(false);
   const catchupTimeout = useRef<NodeJS.Timeout | null>(null);
 
+  // --- TELEMETRY & LOG AGGREGATION ---
   const syncLogs = useRef<any[]>([]);
+  const collectedLogsRef = useRef<Record<string, any[]>>({}); // Holds logs gathered from all devices
+
   const logEvent = useCallback((e: string, data: any) => {
     syncLogs.current.push({ t: new Date().toISOString(), r: isHost ? 'HOST' : 'JOINER', e, ...data });
     if (syncLogs.current.length > 2500) syncLogs.current.shift();
   }, [isHost]);
 
+  // Master Scatter-Gather Download Function
   const downloadLogs = useCallback(() => {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(syncLogs.current, null, 2));
-    const a = document.createElement('a');
-    a.href = dataStr; a.download = `sync_omega_${isHost ? 'host' : 'joiner'}_${userId.slice(0,5)}.json`;
-    document.body.appendChild(a); a.click(); a.remove();
-  }, [isHost, userId]);
+    if (isHost && channelRef.current) {
+      // 1. Gather Host's own logs
+      collectedLogsRef.current = {
+        [`HOST_${deviceInfo.current.os}_${userId.slice(0,5)}`]: syncLogs.current
+      };
+      
+      // 2. Broadcast request to all joiners
+      logEvent('BROADCAST_LOG_REQUEST', {});
+      channelRef.current.send({ type: 'broadcast', event: 'request_logs', payload: {} });
+      
+      // 3. Wait 2 seconds for all joiners to upload their payloads, then download the master file
+      setTimeout(() => {
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
+        const a = document.createElement('a');
+        a.href = dataStr; a.download = `sync_omega_ALL_DEVICES_${Date.now()}.json`;
+        document.body.appendChild(a); a.click(); a.remove();
+      }, 2000);
+    } else {
+      // Fallback for Joiners downloading their own local logs manually
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(syncLogs.current, null, 2));
+      const a = document.createElement('a');
+      a.href = dataStr; a.download = `sync_omega_JOINER_${userId.slice(0,5)}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+  }, [isHost, userId, logEvent]);
 
+  // ============================================================================
+  // SYSTEM & BACKGROUND MANAGEMENT
+  // ============================================================================
   useEffect(() => {
     const acquireWakeLock = async () => {
       if ('wakeLock' in navigator && !wakeLockRef.current) {
@@ -192,6 +219,9 @@ export const useSyncEngine = ({
     return () => document.removeEventListener('visibilitychange', handleVis);
   }, [isHost, logEvent, userId]);
 
+  // ============================================================================
+  // MEDIA MANIPULATORS
+  // ============================================================================
   const executeHardSeek = useCallback((time: number, reason: string, lockoutMs = 2500) => {
     logEvent('HARD_SEEK', { target: time, reason });
     if (catchupTimeout.current) { clearTimeout(catchupTimeout.current); catchupTimeout.current = null; }
@@ -259,7 +289,6 @@ export const useSyncEngine = ({
         clockOffsetRef.current = metrics.offset;
         networkJitterRef.current = metrics.jitter;
         
-        // Push Live Stats to React State UI
         setLatency(Math.round(metrics.rtt));
         setNetworkJitter(Math.round(metrics.jitter));
         
@@ -267,6 +296,18 @@ export const useSyncEngine = ({
            channel.track({ id: userId, isHost, joinedAt: Date.now(), os: deviceInfo.current.os, syncStatus: 'synced', latency: Math.round(metrics.rtt), jitter: Math.round(metrics.jitter), lastSyncDelta: lastSyncDeltaRef.current });
         }
       }
+    });
+
+    // --- REMOTE LOG GATHERING PROTOCOL ---
+    channel.on('broadcast', { event: 'request_logs' }, () => {
+      if (isHost) return;
+      logEvent('UPLOADING_LOGS_TO_HOST', {});
+      channel.send({ type: 'broadcast', event: 'submit_logs', payload: { uId: userId, os: deviceInfo.current.os, logs: syncLogs.current } });
+    });
+
+    channel.on('broadcast', { event: 'submit_logs' }, ({ payload }) => {
+      if (!isHost) return;
+      collectedLogsRef.current[`JOINER_${payload.os}_${payload.uId.slice(0,5)}`] = payload.logs;
     });
 
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: EpochState }) => {
@@ -327,7 +368,7 @@ export const useSyncEngine = ({
   }, [roomId, userId, isHost, logEvent, executeHardSeek]);
 
   // ============================================================================
-  // LAYER 2: AUTONOMOUS JOINER EVALUATION LOOP (100% React Safe)
+  // LAYER 2: AUTONOMOUS JOINER EVALUATION LOOP 
   // ============================================================================
   useEffect(() => {
     if (isHost) return;
@@ -344,7 +385,6 @@ export const useSyncEngine = ({
           const localTime = handlers.current.getCurrentTime();
           const drift = Math.abs(localTime - epoch.startVideoTime);
           
-          // Push Live Stats to UI
           setLastSyncDelta(Math.round(drift * 1000));
           lastSyncDeltaRef.current = Math.round(drift * 1000);
           
@@ -363,7 +403,6 @@ export const useSyncEngine = ({
       const drift = expectedTime - localTime;
       const absDrift = Math.abs(drift);
       
-      // Push Live Stats to UI 
       setLastSyncDelta(Math.round(absDrift * 1000));
       lastSyncDeltaRef.current = Math.round(absDrift * 1000);
       
@@ -404,9 +443,11 @@ export const useSyncEngine = ({
                   }
                   lastSeekTime.current = 0;
 
-                  if (absDrift <= 0.060) {
+                  // 🎧 EXPANDED SOFT GLIDE THRESHOLD (Now glides up to 150ms leads instead of stutter pausing)
+                  if (absDrift <= 0.150) {
                       executeSoftGlide(absDrift);
                   } else {
+                      // Only pause if massively ahead (>150ms)
                       const pauseMs = Math.round(absDrift * 1000) - 5;
                       if (pauseMs > 10) {
                           logEvent('MICRO_PAUSE', { pauseMs });
