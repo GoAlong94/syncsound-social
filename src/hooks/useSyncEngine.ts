@@ -5,22 +5,18 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v3.1-Omega-Ultimate";
+export const ENGINE_VERSION = "v3.2-Golden-Restored";
 
 // ============================================================================
-// PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING (UNCOMPRESSED)
+// PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING 
 // ============================================================================
 
-/**
- * 1D Kalman Filter for Network RTT
- * Isolates true latency from 4G/5G cellular network spikes.
- */
 class KalmanFilter {
-  private r: number; // Measurement noise covariance
-  private q: number; // Process noise covariance
-  private p: number; // Estimation error covariance
-  private x: number; // Value estimate
-  private k: number; // Kalman gain
+  private r: number; 
+  private q: number; 
+  private p: number; 
+  private x: number; 
+  private k: number;
 
   constructor(measurementNoise = 10, processNoise = 0.1, initialError = 1, initialEstimate = 0) {
     this.r = measurementNoise; 
@@ -35,9 +31,7 @@ class KalmanFilter {
         this.x = measurement; 
         return measurement; 
     }
-    // Prediction update
     this.p = this.p + this.q; 
-    // Measurement update
     this.k = this.p / (this.p + this.r); 
     this.x = this.x + this.k * (measurement - this.x); 
     this.p = (1 - this.k) * this.p; 
@@ -45,14 +39,10 @@ class KalmanFilter {
   }
 }
 
-/**
- * Network Time Protocol (NTP) Interquartile Analyzer
- * Cleans asymmetric routing delays to establish a perfectly synchronized UTC epoch.
- */
 class NTPAnalyzer {
   private history: { rtt: number, offset: number }[] = [];
   private emaOffset: number | null = null;
-  private readonly alpha = 0.15; // EMA Smoothing factor
+  private readonly alpha = 0.15; 
 
   addSample(rtt: number, offset: number) {
     this.history.push({ rtt, offset });
@@ -68,7 +58,6 @@ class NTPAnalyzer {
        return { offset: latest.offset, jitter: 50, rtt: latest.rtt };
     }
 
-    // Isolate the fastest, most direct packets (Lowest RTT = Truest Offset)
     const sorted = [...this.history].sort((a, b) => a.rtt - b.rtt);
     const bestPackets = sorted.slice(Math.floor(sorted.length * 0.1), Math.floor(sorted.length * 0.5));
 
@@ -82,7 +71,6 @@ class NTPAnalyzer {
     const avgOffset = sumOffset / bestPackets.length;
     const avgRtt = sumRtt / bestPackets.length;
 
-    // Calculate Variance & Jitter
     const variance = bestPackets.reduce((acc, val) => acc + Math.pow(val.rtt - avgRtt, 2), 0) / bestPackets.length;
     
     if (this.emaOffset === null) {
@@ -99,11 +87,6 @@ class NTPAnalyzer {
   }
 }
 
-/**
- * Proportional-Integral-Derivative (PID) Controller
- * Learns the exact microsecond delay of an individual device's audio hardware
- * if a Macro-Seek is required on a terrible network.
- */
 class PIDController {
   private kp: number; private ki: number; private kd: number;
   private integral: number = 0; private prevError: number = 0;
@@ -119,12 +102,10 @@ class PIDController {
     if (dt <= 0) return 0;
     const p = this.kp * error;
     
-    // Integral with Anti-windup
     this.integral += error * dt;
     if (this.integral * this.ki > this.maxOut) this.integral = this.maxOut / this.ki;
     else if (this.integral * this.ki < this.minOut) this.integral = this.minOut / this.ki;
 
-    // Derivative with Low-Pass Filter
     const rawD = (error - this.prevError) / dt;
     this.derivative = (0.7 * rawD) + (0.3 * this.derivative); 
     const d = this.kd * this.derivative;
@@ -164,7 +145,7 @@ interface EpochState {
 }
 
 // ============================================================================
-// PART 2: THE DECOUPLED V3.1 OMEGA ENGINE
+// PART 2: THE DECOUPLED OMEGA ENGINE
 // ============================================================================
 
 export const useSyncEngine = ({
@@ -181,7 +162,6 @@ export const useSyncEngine = ({
   const [lastSyncDelta, setLastSyncDelta] = useState<number>(0);
   const lastSyncDeltaRef = useRef<number>(0); 
   
-  // REACT-SAFE HANDLER REFS
   const handlers = useRef({ getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate });
   useEffect(() => { handlers.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; });
   
@@ -203,6 +183,7 @@ export const useSyncEngine = ({
   const isColdStartRef = useRef<boolean>(true);
   const warmPenaltyPID = useRef(new PIDController(0.6, 0.05, 0.1, -0.200, 1.000)); 
   const currentWarmPenaltyRef = useRef<number>(deviceInfo.current.os === 'iOS' ? 0.350 : 0.150);
+  const consecutiveBufferingTicks = useRef<number>(0); // FIX: Macro-Buffer Detector
   
   // EXECUTION LOCKS
   const ignoreSyncUntil = useRef<number>(0);
@@ -213,7 +194,7 @@ export const useSyncEngine = ({
   const consecutiveMisses = useRef<number>(0);
   const wasPlayingRef = useRef<boolean>(false);
   const catchupTimeout = useRef<NodeJS.Timeout | null>(null);
-  const cachedVideoIdRef = useRef<string | null>(null); // Convoy Readiness Flag
+  const cachedVideoIdRef = useRef<string | null>(null); 
 
   // --- OMNISCIENT TELEMETRY LOGGING ---
   const syncLogs = useRef<any[]>([]);
@@ -243,7 +224,6 @@ export const useSyncEngine = ({
       logEvent('BROADCAST_LOG_REQUEST', {});
       channelRef.current.send({ type: 'broadcast', event: 'request_logs', payload: {} });
       
-      // Wait 2.5s for Joiners to upload their payloads, then generate Master JSON
       setTimeout(() => {
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a');
@@ -256,9 +236,6 @@ export const useSyncEngine = ({
     }
   }, [isHost, userId, logEvent]);
 
-  // ============================================================================
-  // SYSTEM & BACKGROUND MANAGEMENT
-  // ============================================================================
   useEffect(() => {
     const acquireWakeLock = async () => {
       if ('wakeLock' in navigator && !wakeLockRef.current) {
@@ -295,10 +272,8 @@ export const useSyncEngine = ({
   }, [logEvent]);
 
   const executeSoftGlide = useCallback((driftSeconds: number, direction: 'ahead' | 'behind') => {
-      // 0.75x drops 0.25s per sec. 1.25x gains 0.25s per sec.
       const rate = direction === 'ahead' ? 0.75 : 1.25;
       const virtualDiffPerSec = 0.25; 
-      
       const holdTimeMs = Math.min((driftSeconds / virtualDiffPerSec) * 1000, 2000); 
       
       logEvent('SOFT_GLIDE_EXEC', { direction, driftSeconds, holdTimeMs, rate });
@@ -358,9 +333,6 @@ export const useSyncEngine = ({
         setLatency(Math.round(metrics.rtt));
         setNetworkJitter(Math.round(metrics.jitter));
         
-        // --- PHASE 4: NTP JITTER FREEZE ---
-        // After 45 successful pings, we lock the UTC offset. This prevents terrible 4G
-        // networks from poisoning the math and causing phantom drift calculations.
         if (pingCountRef.current > 45) {
             isNtpFrozenRef.current = true;
             logEvent('NTP_FROZEN_LOCKED', { finalOffset: metrics.offset, finalJitter: metrics.jitter });
@@ -445,7 +417,7 @@ export const useSyncEngine = ({
   }, [roomId, userId, isHost, logEvent, executeHardSeek]);
 
   // ============================================================================
-  // LAYER 2: AUTONOMOUS JOINER EVALUATION LOOP 
+  // LAYER 2: AUTONOMOUS JOINER EVALUATION LOOP (GOLDEN V2 RESTORED)
   // ============================================================================
   useEffect(() => {
     if (isHost) return;
@@ -456,14 +428,19 @@ export const useSyncEngine = ({
       
       const playerState = handlers.current.getPlayerState();
       
-      // 🛡️ THE POST-BUFFER GRACE PERIOD FIX 🛡️
-      // State 3 = Buffering, State -1 = Unstarted
-      if (playerState === 3 || playerState === -1) {
-          logEvent('BUFFER_PROTECT_ACTIVE');
-          setSyncStatus('syncing');
-          ignoreSyncUntil.current = Date.now() + 1000;
-          postBufferGracePeriodUntil.current = Date.now() + 4000; 
+      // 🛡️ TRUE MACRO-BUFFER DETECTOR (Ignores Wi-Fi seek blips)
+      if (playerState === 3) {
+          consecutiveBufferingTicks.current += 1;
+          if (consecutiveBufferingTicks.current > 2) { 
+              // Only engage Grace Period if spinning for > 600ms
+              logEvent('TRUE_MACRO_BUFFER_DETECTED');
+              setSyncStatus('syncing');
+              ignoreSyncUntil.current = Date.now() + 1000;
+              postBufferGracePeriodUntil.current = Date.now() + 3000; 
+          }
           return; 
+      } else {
+          consecutiveBufferingTicks.current = 0;
       }
 
       if (!epoch.isPlaying) {
@@ -495,62 +472,68 @@ export const useSyncEngine = ({
       setLastSyncDelta(Math.round(absDrift * 1000));
       lastSyncDeltaRef.current = Math.round(absDrift * 1000);
 
-      // 🏆 THE GOOD NETWORK COAST MODE (< 5ms) 🏆
-      if (absDrift < 0.005) {
+      // 🏆 COAST MODE (< 10ms Psytrance Sync)
+      if (absDrift <= 0.010) {
           consecutiveMisses.current = 0;
+          warmPenaltyPID.current.reset();
           setSyncStatus('synced');
           if (playerState !== 1) handlers.current.play();
-          return; // Skip all math! Lock the deadband and coast perfectly.
+          return; 
       }
       
-      // Dynamic Tolerance: Expands up to 250ms on extremely jittery forest networks
-      const tolerance = Math.max(0.015, Math.min(0.250, (networkJitterRef.current / 1000) * 1.5));
-
-      logEvent('EVAL_TICK', { drift, absDrift, tolerance, inGracePeriod: Date.now() < postBufferGracePeriodUntil.current });
+      const tolerance = Math.max(0.015, Math.min(0.200, (networkJitterRef.current / 1000) * 1.5));
 
       if (absDrift > tolerance) {
           consecutiveMisses.current += 1;
           
           if (consecutiveMisses.current >= 2) {
               setSyncStatus('syncing');
-              
-              const isInGracePeriod = Date.now() < postBufferGracePeriodUntil.current;
+              const isMacroBufferGrace = Date.now() < postBufferGracePeriodUntil.current;
               
               if (drift > 0) {
-                  // BEHIND
+                  // 🔴 BEHIND (Restored V2 Logic)
                   const dt = (Date.now() - lastSeekTime.current) / 1000;
-                  if (dt > 0 && dt < 15 && !isColdStartRef.current && absDrift > 0.600) {
-                      // Only update PID penalty on severe macro-behinds
+                  if (dt > 0 && dt < 15 && !isColdStartRef.current && absDrift > 0.200) {
                       currentWarmPenaltyRef.current += warmPenaltyPID.current.calculate(absDrift, dt);
-                      currentWarmPenaltyRef.current = Math.min(1.2, currentWarmPenaltyRef.current);
+                      currentWarmPenaltyRef.current = Math.min(1.200, currentWarmPenaltyRef.current);
                   }
 
-                  if (absDrift <= 0.600 || isInGracePeriod) {
-                      executeSoftGlide(absDrift, 'behind');
+                  if (absDrift <= 0.150) {
+                      executeSoftGlide(absDrift, 'behind'); // Micro-behind: Glide
+                  } else if (isMacroBufferGrace && absDrift < 1.0) {
+                      executeSoftGlide(absDrift, 'behind'); // Forest Mode: Glide to avoid re-buffering
                   } else {
-                      const penalty = isColdStartRef.current ? 1.5 : currentWarmPenaltyRef.current;
-                      executeHardSeek(expectedTime + penalty, `Macro-Behind: ${absDrift.toFixed(3)}s`, 2500);
+                      const penalty = isColdStartRef.current ? 1.0 : currentWarmPenaltyRef.current;
+                      executeHardSeek(expectedTime + penalty, `Macro-Behind: ${absDrift.toFixed(3)}s`);
                       lastSeekTime.current = Date.now();
                       isColdStartRef.current = false;
                   }
               } else {
-                  // AHEAD
-                  if (Date.now() - lastSeekTime.current < 5000 && !isColdStartRef.current && absDrift > 0.600) {
+                  // 🟢 AHEAD (Restored V2 Micro-Pause Magic)
+                  if (Date.now() - lastSeekTime.current < 5000 && !isColdStartRef.current && absDrift > 0.200) {
                       currentWarmPenaltyRef.current -= (absDrift * 0.4);
                       currentWarmPenaltyRef.current = Math.max(0.100, currentWarmPenaltyRef.current);
                   }
                   lastSeekTime.current = 0;
 
-                  if (absDrift <= 0.600 || isInGracePeriod) {
-                      executeSoftGlide(absDrift, 'ahead');
+                  if (absDrift <= 0.050) {
+                      executeSoftGlide(absDrift, 'ahead'); // Micro-ahead: Glide
                   } else {
-                      executeHardSeek(expectedTime, `Macro-Ahead: ${absDrift.toFixed(3)}s`, 2500);
+                      // Macro-ahead: Instant Micro-Pause (Golden Math)
+                      const pauseMs = Math.round(absDrift * 1000) - 5;
+                      logEvent('MICRO_PAUSE_EXEC', { pauseMs });
+                      if (catchupTimeout.current) clearTimeout(catchupTimeout.current);
+                      handlers.current.pause();
+                      ignoreSyncUntil.current = Date.now() + pauseMs + 400;
+                      catchupTimeout.current = setTimeout(() => { 
+                          handlers.current.play(); 
+                          catchupTimeout.current = null; 
+                      }, pauseMs);
                   }
               }
           }
       } else {
           consecutiveMisses.current = 0;
-          warmPenaltyPID.current.reset();
           setSyncStatus('synced');
           if (playerState !== 1) handlers.current.play();
       }
@@ -627,7 +610,6 @@ export const useSyncEngine = ({
     if (isHost) return;
     setSyncStatus('syncing');
     
-    // Purge the NTP locks and calculate fresh stats
     ntpAnalyzer.current = new NTPAnalyzer();
     kalmanRtt.current = new KalmanFilter(15, 0.5, 1, 0);
     isNtpFrozenRef.current = false;
