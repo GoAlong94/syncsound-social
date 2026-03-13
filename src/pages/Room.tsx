@@ -28,6 +28,7 @@ const Room = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isSynced, setIsSynced] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [hasSeenHost, setHasSeenHost] = useState(false); // Track if we ever successfully found the host
   
   const playerControlsRef = useRef<{
     getCurrentTime: () => number;
@@ -151,20 +152,43 @@ const Room = () => {
     }
   };
 
-  // --- NEW: KICK JOINERS IF HOST EXITS ---
+  // ============================================================================
+  // 2-PHASE ROOM VERIFICATION & HOST KICK LOGIC
+  // ============================================================================
   useEffect(() => {
-    if (isHost || connectedDevices.length === 0) return;
-    
+    if (isHost) return;
+
     const hostActive = connectedDevices.some(d => d.isHost);
-    if (!hostActive) {
-       // Wait 4 seconds in case the host just quickly refreshed the page
-       const timer = setTimeout(() => {
-          toast.error("The Host has ended the session.");
-          navigate('/');
-       }, 4000);
-       return () => clearTimeout(timer);
+    
+    if (hostActive) {
+      if (!hasSeenHost) {
+          setHasSeenHost(true);
+      }
+      return; // The Host is here, all is well.
     }
-  }, [connectedDevices, isHost, navigate]);
+
+    // If we reach here, the Host is missing from the network.
+    if (!hasSeenHost) {
+      // PHASE 1: Validating Room Code
+      // We just joined. Wait 8 seconds for the Host's network presence to arrive.
+      // If they don't arrive, the room code is fake, or they already left.
+      const validationTimer = setTimeout(() => {
+        toast.error("Invalid Room Code or Host not found.");
+        navigate('/');
+      }, 8000);
+      return () => clearTimeout(validationTimer);
+      
+    } else {
+      // PHASE 2: Host Disconnection Protection
+      // We successfully saw the Host earlier, but they just vanished.
+      // Give them a 5-second grace period to refresh their page before kicking everyone.
+      const disconnectTimer = setTimeout(() => {
+        toast.error("The Host has ended the session.");
+        navigate('/');
+      }, 5000);
+      return () => clearTimeout(disconnectTimer);
+    }
+  }, [connectedDevices, isHost, hasSeenHost, navigate]);
 
   const currentQueueIndex = queue.items.findIndex(item => item.id === videoId);
   const nextVideoId = (currentQueueIndex !== -1 && currentQueueIndex < queue.items.length - 1)
@@ -183,7 +207,7 @@ const Room = () => {
 
         <div className="flex items-center gap-3">
           
-          {/* FIX: Get Logs Button strictly limited to Host, visible on mobile */}
+          {/* Get Logs Button is Strictly Hosted-Only */}
           {isHost && (
             <Button
               variant="outline"
@@ -282,7 +306,10 @@ const Room = () => {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-8">
               <div className="inline-flex items-center gap-3 px-6 py-4 rounded-xl glass">
                 <div className="w-3 h-3 rounded-full bg-primary animate-pulse" />
-                <span className="text-muted-foreground">Waiting for host to select a video...</span>
+                <span className="text-muted-foreground">
+                  {/* Dynamic UI text based on Verification Phase */}
+                  {!hasSeenHost ? "Validating room code and finding Host..." : "Waiting for host to select a video..."}
+                </span>
               </div>
             </motion.div>
           )}
