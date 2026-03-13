@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Copy, Check, Crown, Share2, SkipBack, SkipForward } from 'lucide-react';
+import { ArrowLeft, Copy, Check, Crown, Share2, SkipBack, SkipForward, Download } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 
@@ -45,7 +45,6 @@ const Room = () => {
     setVideoTitle(title);
     setVideoThumbnail(thumbnail);
     if (playerControlsRef.current) {
-      playerControlsRef.current.loadVideo(newVideoId);
       // Auto-play for already synced joiners
       if (isSynced && !isHost) {
         setTimeout(() => {
@@ -67,7 +66,7 @@ const Room = () => {
     forceResync,
     manualResync,
     measureLatency,
-    downloadLogs, // <---- ADD THIS HERE
+    downloadLogs,
     deviceInfo,
     setCurrentVideoId,
   } = useSyncEngine({
@@ -105,9 +104,7 @@ const Room = () => {
       setVideoTitle(title);
       setVideoThumbnail(thumb);
       setCurrentVideoId(vid); // Track video ID for sync validation
-      if (playerControlsRef.current) {
-        playerControlsRef.current.loadVideo(vid);
-      }
+      
       if (isHost) {
         broadcastVideoChange(vid, title, thumb);
       }
@@ -183,6 +180,12 @@ const Room = () => {
     }
   };
 
+  // 🎯 Calculate the Next Video in Queue for the Phantom Pre-loader
+  const currentQueueIndex = queue.items.findIndex(item => item.id === videoId);
+  const nextVideoId = (currentQueueIndex !== -1 && currentQueueIndex < queue.items.length - 1)
+    ? queue.items[currentQueueIndex + 1].id
+    : null;
+
   return (
     <div className="min-h-screen flex flex-col p-4 md:p-6">
       {/* Header */}
@@ -200,14 +203,18 @@ const Room = () => {
         </button>
 
         <div className="flex items-center gap-3">
-          {/* ----- ADDED DEBUG BUTTON ----- */}
-          <button 
-            onClick={downloadLogs} 
-            className="px-3 py-2 text-xs font-mono bg-slate-800 text-slate-300 rounded-lg border border-slate-600 hover:bg-slate-700 transition"
+          
+          {/* Scatter-Gather Log Download Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={downloadLogs}
+            className="hidden sm:flex items-center gap-2 text-xs font-mono bg-slate-800 text-slate-300 border-slate-600 hover:bg-slate-700"
           >
-            Download Logs
-          </button>
-          {/* ------------------------------- */}
+            <Download className="w-3 h-3" />
+            Get Logs
+          </Button>
+
           {/* Room Code */}
           <div className="flex items-center gap-2 px-4 py-2 rounded-xl glass">
             {isHost && <Crown className="w-4 h-4 text-sync-warning" />}
@@ -252,7 +259,7 @@ const Room = () => {
       <div className="flex-1 flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto w-full">
         {/* Left Column: Video + Controls */}
         <div className="flex-1 flex flex-col">
-          {/* Video Player */}
+          {/* Dual-Deck Video Player */}
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -261,6 +268,7 @@ const Room = () => {
           >
             <VideoPlayer
               videoId={videoId}
+              nextVideoId={nextVideoId} // Powers the Phantom Deck B
               videoTitle={videoTitle}
               videoThumbnail={videoThumbnail}
               isHost={isHost}
