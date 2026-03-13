@@ -5,32 +5,19 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v3.2-Golden-Restored";
+export const ENGINE_VERSION = "v3.3-Host-Presence-Fixed";
 
 // ============================================================================
-// PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING 
+// PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING
 // ============================================================================
 
 class KalmanFilter {
-  private r: number; 
-  private q: number; 
-  private p: number; 
-  private x: number; 
-  private k: number;
-
+  private r: number; private q: number; private p: number; private x: number; private k: number;
   constructor(measurementNoise = 10, processNoise = 0.1, initialError = 1, initialEstimate = 0) {
-    this.r = measurementNoise; 
-    this.q = processNoise; 
-    this.p = initialError; 
-    this.x = initialEstimate; 
-    this.k = 0;
+    this.r = measurementNoise; this.q = processNoise; this.p = initialError; this.x = initialEstimate; this.k = 0;
   }
-
   filter(measurement: number): number {
-    if (this.x === 0) { 
-        this.x = measurement; 
-        return measurement; 
-    }
+    if (this.x === 0) { this.x = measurement; return measurement; }
     this.p = this.p + this.q; 
     this.k = this.p / (this.p + this.r); 
     this.x = this.x + this.k * (measurement - this.x); 
@@ -43,47 +30,26 @@ class NTPAnalyzer {
   private history: { rtt: number, offset: number }[] = [];
   private emaOffset: number | null = null;
   private readonly alpha = 0.15; 
-
   addSample(rtt: number, offset: number) {
     this.history.push({ rtt, offset });
-    if (this.history.length > 30) {
-        this.history.shift();
-    }
+    if (this.history.length > 30) this.history.shift();
   }
-
   getMetrics(): { offset: number, jitter: number, rtt: number } {
     if (this.history.length === 0) return { offset: 0, jitter: 0, rtt: 0 };
     if (this.history.length < 5) {
        const latest = this.history[this.history.length - 1];
        return { offset: latest.offset, jitter: 50, rtt: latest.rtt };
     }
-
     const sorted = [...this.history].sort((a, b) => a.rtt - b.rtt);
     const bestPackets = sorted.slice(Math.floor(sorted.length * 0.1), Math.floor(sorted.length * 0.5));
-
-    let sumOffset = 0;
-    let sumRtt = 0;
-    bestPackets.forEach(sample => { 
-        sumOffset += sample.offset; 
-        sumRtt += sample.rtt; 
-    });
-    
+    let sumOffset = 0; let sumRtt = 0;
+    bestPackets.forEach(sample => { sumOffset += sample.offset; sumRtt += sample.rtt; });
     const avgOffset = sumOffset / bestPackets.length;
     const avgRtt = sumRtt / bestPackets.length;
-
     const variance = bestPackets.reduce((acc, val) => acc + Math.pow(val.rtt - avgRtt, 2), 0) / bestPackets.length;
-    
-    if (this.emaOffset === null) {
-        this.emaOffset = avgOffset;
-    } else {
-        this.emaOffset = (this.alpha * avgOffset) + ((1 - this.alpha) * this.emaOffset);
-    }
-
-    return { 
-        offset: this.emaOffset, 
-        jitter: Math.sqrt(variance), 
-        rtt: avgRtt 
-    };
+    if (this.emaOffset === null) this.emaOffset = avgOffset;
+    else this.emaOffset = (this.alpha * avgOffset) + ((1 - this.alpha) * this.emaOffset);
+    return { offset: this.emaOffset, jitter: Math.sqrt(variance), rtt: avgRtt };
   }
 }
 
@@ -92,33 +58,22 @@ class PIDController {
   private integral: number = 0; private prevError: number = 0;
   private minOut: number; private maxOut: number;
   private derivative: number = 0;
-
   constructor(kp: number, ki: number, kd: number, minOut: number, maxOut: number) {
-    this.kp = kp; this.ki = ki; this.kd = kd; 
-    this.minOut = minOut; this.maxOut = maxOut;
+    this.kp = kp; this.ki = ki; this.kd = kd; this.minOut = minOut; this.maxOut = maxOut;
   }
-
   calculate(error: number, dt: number): number {
     if (dt <= 0) return 0;
     const p = this.kp * error;
-    
     this.integral += error * dt;
     if (this.integral * this.ki > this.maxOut) this.integral = this.maxOut / this.ki;
     else if (this.integral * this.ki < this.minOut) this.integral = this.minOut / this.ki;
-
     const rawD = (error - this.prevError) / dt;
     this.derivative = (0.7 * rawD) + (0.3 * this.derivative); 
     const d = this.kd * this.derivative;
     this.prevError = error;
-
     return Math.max(this.minOut, Math.min(this.maxOut, p + (this.ki * this.integral) + d));
   }
-  
-  reset() { 
-      this.integral = 0; 
-      this.prevError = 0; 
-      this.derivative = 0; 
-  }
+  reset() { this.integral = 0; this.prevError = 0; this.derivative = 0; }
 }
 
 const getAudioHardwareOffset = (os: string, browser: string): number => {
@@ -156,7 +111,6 @@ export const useSyncEngine = ({
   const [connectedDevices, setConnectedDevices] = useState<PresenceState[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('unsynced');
   
-  // LIVE UI STATS
   const [latency, setLatency] = useState<number>(0);
   const [networkJitter, setNetworkJitter] = useState<number>(0);
   const [lastSyncDelta, setLastSyncDelta] = useState<number>(0);
@@ -168,7 +122,6 @@ export const useSyncEngine = ({
   const deviceInfo = useRef(getDeviceInfo());
   const wakeLockRef = useRef<any>(null);
 
-  // NTP AND NETWORK MATH REFS
   const ntpAnalyzer = useRef(new NTPAnalyzer());
   const kalmanRtt = useRef(new KalmanFilter(15, 0.5, 1, 0));
   const clockOffsetRef = useRef<number>(0); 
@@ -179,13 +132,11 @@ export const useSyncEngine = ({
   
   const epochRef = useRef<EpochState>({ isPlaying: false, startNetworkTime: 0, startVideoTime: 0, videoId: null, updateId: 0 });
 
-  // AI & STATE TRACKERS
   const isColdStartRef = useRef<boolean>(true);
   const warmPenaltyPID = useRef(new PIDController(0.6, 0.05, 0.1, -0.200, 1.000)); 
   const currentWarmPenaltyRef = useRef<number>(deviceInfo.current.os === 'iOS' ? 0.350 : 0.150);
-  const consecutiveBufferingTicks = useRef<number>(0); // FIX: Macro-Buffer Detector
+  const consecutiveBufferingTicks = useRef<number>(0); 
   
-  // EXECUTION LOCKS
   const ignoreSyncUntil = useRef<number>(0);
   const softGlideUntil = useRef<number>(0);
   const postBufferGracePeriodUntil = useRef<number>(0);
@@ -196,34 +147,21 @@ export const useSyncEngine = ({
   const catchupTimeout = useRef<NodeJS.Timeout | null>(null);
   const cachedVideoIdRef = useRef<string | null>(null); 
 
-  // --- OMNISCIENT TELEMETRY LOGGING ---
   const syncLogs = useRef<any[]>([]);
   const collectedLogsRef = useRef<Record<string, any[]>>({});
 
   const logEvent = useCallback((e: string, data: any = {}) => {
     const currentState = handlers.current.getPlayerState();
     const currentLocalTime = handlers.current.getCurrentTime();
-    
-    syncLogs.current.push({ 
-      t: new Date().toISOString(), 
-      r: isHost ? 'HOST' : 'JOINER', 
-      e, 
-      ctx: { state: currentState, locTime: currentLocalTime, jitter: networkJitterRef.current },
-      ...data 
-    });
-    
-    if (syncLogs.current.length > 3000) {
-        syncLogs.current.shift();
-    }
+    syncLogs.current.push({ t: new Date().toISOString(), r: isHost ? 'HOST' : 'JOINER', e, ctx: { state: currentState, locTime: currentLocalTime, jitter: networkJitterRef.current }, ...data });
+    if (syncLogs.current.length > 3000) syncLogs.current.shift();
   }, [isHost]);
 
-  // --- SCATTER-GATHER LOG DOWNLOADER ---
   const downloadLogs = useCallback(() => {
     if (isHost && channelRef.current) {
       collectedLogsRef.current = { [`HOST_${deviceInfo.current.os}_${userId.slice(0,5)}`]: syncLogs.current };
       logEvent('BROADCAST_LOG_REQUEST', {});
       channelRef.current.send({ type: 'broadcast', event: 'request_logs', payload: {} });
-      
       setTimeout(() => {
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a');
@@ -257,17 +195,12 @@ export const useSyncEngine = ({
     return () => document.removeEventListener('visibilitychange', handleVis);
   }, [isHost, logEvent, userId]);
 
-  // ============================================================================
-  // MEDIA MANIPULATORS
-  // ============================================================================
   const executeHardSeek = useCallback((time: number, reason: string, lockoutMs = 2500) => {
     logEvent('HARD_SEEK_EXEC', { target: time, reason });
     if (catchupTimeout.current) { clearTimeout(catchupTimeout.current); catchupTimeout.current = null; }
-    
     handlers.current.seekTo(time);
     if (epochRef.current.isPlaying) handlers.current.play();
     else handlers.current.pause();
-    
     ignoreSyncUntil.current = Date.now() + lockoutMs; 
   }, [logEvent]);
 
@@ -275,13 +208,10 @@ export const useSyncEngine = ({
       const rate = direction === 'ahead' ? 0.75 : 1.25;
       const virtualDiffPerSec = 0.25; 
       const holdTimeMs = Math.min((driftSeconds / virtualDiffPerSec) * 1000, 2000); 
-      
       logEvent('SOFT_GLIDE_EXEC', { direction, driftSeconds, holdTimeMs, rate });
       handlers.current.setPlaybackRate(rate);
-      
       softGlideUntil.current = Date.now() + holdTimeMs;
       ignoreSyncUntil.current = Date.now() + holdTimeMs + 200; 
-      
       setTimeout(() => { 
           handlers.current.setPlaybackRate(1.0); 
           logEvent('SOFT_GLIDE_END', { restoredRate: 1.0 });
@@ -329,7 +259,6 @@ export const useSyncEngine = ({
         
         clockOffsetRef.current = metrics.offset;
         networkJitterRef.current = metrics.jitter;
-        
         setLatency(Math.round(metrics.rtt));
         setNetworkJitter(Math.round(metrics.jitter));
         
@@ -337,7 +266,6 @@ export const useSyncEngine = ({
             isNtpFrozenRef.current = true;
             logEvent('NTP_FROZEN_LOCKED', { finalOffset: metrics.offset, finalJitter: metrics.jitter });
         }
-        
         if (Math.random() < 0.2) { 
            channel.track({ id: userId, isHost, joinedAt: Date.now(), os: deviceInfo.current.os, syncStatus: 'synced', latency: Math.round(metrics.rtt), jitter: Math.round(metrics.jitter), cachedVideoId: cachedVideoIdRef.current });
         }
@@ -403,12 +331,27 @@ export const useSyncEngine = ({
     });
 
     channel.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED' && !isHost) {
-        let pings = 0;
-        const interval = setInterval(() => {
-           if (pings++ < 45) channel.send({ type: 'broadcast', event: 'ping', payload: { t: Date.now(), sId: userId } });
-           else { clearInterval(interval); channel.send({ type: 'broadcast', event: 'sync_req', payload: { sId: userId } }); }
-        }, 150);
+      if (status === 'SUBSCRIBED') {
+        // FIX: The Host MUST announce its presence to the network so Joiners know it exists.
+        await channel.track({ 
+            id: userId, 
+            isHost, 
+            joinedAt: Date.now(), 
+            os: deviceInfo.current.os, 
+            browser: deviceInfo.current.browser,
+            syncStatus: isHost ? 'synced' : 'unsynced', 
+            latency: 0, 
+            jitter: 0, 
+            cachedVideoId: cachedVideoIdRef.current 
+        });
+
+        if (!isHost) {
+          let pings = 0;
+          const interval = setInterval(() => {
+             if (pings++ < 45) channel.send({ type: 'broadcast', event: 'ping', payload: { t: Date.now(), sId: userId } });
+             else { clearInterval(interval); channel.send({ type: 'broadcast', event: 'sync_req', payload: { sId: userId } }); }
+          }, 150);
+        }
       }
     });
 
@@ -417,7 +360,7 @@ export const useSyncEngine = ({
   }, [roomId, userId, isHost, logEvent, executeHardSeek]);
 
   // ============================================================================
-  // LAYER 2: AUTONOMOUS JOINER EVALUATION LOOP (GOLDEN V2 RESTORED)
+  // LAYER 2: AUTONOMOUS JOINER EVALUATION LOOP 
   // ============================================================================
   useEffect(() => {
     if (isHost) return;
@@ -428,11 +371,9 @@ export const useSyncEngine = ({
       
       const playerState = handlers.current.getPlayerState();
       
-      // 🛡️ TRUE MACRO-BUFFER DETECTOR (Ignores Wi-Fi seek blips)
       if (playerState === 3) {
           consecutiveBufferingTicks.current += 1;
           if (consecutiveBufferingTicks.current > 2) { 
-              // Only engage Grace Period if spinning for > 600ms
               logEvent('TRUE_MACRO_BUFFER_DETECTED');
               setSyncStatus('syncing');
               ignoreSyncUntil.current = Date.now() + 1000;
@@ -491,7 +432,7 @@ export const useSyncEngine = ({
               const isMacroBufferGrace = Date.now() < postBufferGracePeriodUntil.current;
               
               if (drift > 0) {
-                  // 🔴 BEHIND (Restored V2 Logic)
+                  // 🔴 BEHIND
                   const dt = (Date.now() - lastSeekTime.current) / 1000;
                   if (dt > 0 && dt < 15 && !isColdStartRef.current && absDrift > 0.200) {
                       currentWarmPenaltyRef.current += warmPenaltyPID.current.calculate(absDrift, dt);
@@ -499,9 +440,9 @@ export const useSyncEngine = ({
                   }
 
                   if (absDrift <= 0.150) {
-                      executeSoftGlide(absDrift, 'behind'); // Micro-behind: Glide
+                      executeSoftGlide(absDrift, 'behind'); 
                   } else if (isMacroBufferGrace && absDrift < 1.0) {
-                      executeSoftGlide(absDrift, 'behind'); // Forest Mode: Glide to avoid re-buffering
+                      executeSoftGlide(absDrift, 'behind'); 
                   } else {
                       const penalty = isColdStartRef.current ? 1.0 : currentWarmPenaltyRef.current;
                       executeHardSeek(expectedTime + penalty, `Macro-Behind: ${absDrift.toFixed(3)}s`);
@@ -509,7 +450,7 @@ export const useSyncEngine = ({
                       isColdStartRef.current = false;
                   }
               } else {
-                  // 🟢 AHEAD (Restored V2 Micro-Pause Magic)
+                  // 🟢 AHEAD
                   if (Date.now() - lastSeekTime.current < 5000 && !isColdStartRef.current && absDrift > 0.200) {
                       currentWarmPenaltyRef.current -= (absDrift * 0.4);
                       currentWarmPenaltyRef.current = Math.max(0.100, currentWarmPenaltyRef.current);
@@ -517,9 +458,8 @@ export const useSyncEngine = ({
                   lastSeekTime.current = 0;
 
                   if (absDrift <= 0.050) {
-                      executeSoftGlide(absDrift, 'ahead'); // Micro-ahead: Glide
+                      executeSoftGlide(absDrift, 'ahead'); 
                   } else {
-                      // Macro-ahead: Instant Micro-Pause (Golden Math)
                       const pauseMs = Math.round(absDrift * 1000) - 5;
                       logEvent('MICRO_PAUSE_EXEC', { pauseMs });
                       if (catchupTimeout.current) clearTimeout(catchupTimeout.current);
@@ -541,7 +481,6 @@ export const useSyncEngine = ({
     }, 300); 
     return () => clearInterval(interval);
   }, [isHost, logEvent, executeHardSeek, executeSoftGlide]);
-
 
   // ============================================================================
   // LAYER 3: HOST BROADCAST POLLER 
@@ -579,9 +518,6 @@ export const useSyncEngine = ({
     return () => clearInterval(interval);
   }, [isHost, logEvent]);
 
-  // ============================================================================
-  // EXPOSED CONTROLS
-  // ============================================================================
   const broadcastPlay = useCallback(() => { 
     if (!isHost) return;
     epochRef.current = { isPlaying: true, startNetworkTime: Date.now(), startVideoTime: handlers.current.getCurrentTime(), videoId: currentVideoIdRef.current, updateId: epochRef.current.updateId + 1 };
@@ -609,12 +545,10 @@ export const useSyncEngine = ({
   const manualResyncFunc = useCallback(() => {
     if (isHost) return;
     setSyncStatus('syncing');
-    
     ntpAnalyzer.current = new NTPAnalyzer();
     kalmanRtt.current = new KalmanFilter(15, 0.5, 1, 0);
     isNtpFrozenRef.current = false;
     pingCountRef.current = 0;
-    
     requestSync();
     for(let i=0; i<10; i++) setTimeout(measureLatency, i*100);
   }, [isHost, requestSync, measureLatency]);
@@ -624,7 +558,7 @@ export const useSyncEngine = ({
     deviceInfo: deviceInfo.current, setCurrentVideoId: (id: string) => { currentVideoIdRef.current = id; },
     reportPreloadReady: (vid: string) => { 
         cachedVideoIdRef.current = vid; 
-        if (!isHost) channelRef.current?.track({ id: userId, cachedVideoId: vid }); 
+        if (!isHost) channelRef.current?.track({ id: userId, isHost: false, cachedVideoId: vid }); 
     }
   };
 };
