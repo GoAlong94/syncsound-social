@@ -1,11 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useYouTubePlayer } from '@/hooks/useYouTubePlayer';
-import { Loader2, Music, WifiOff, CheckCircle2 } from 'lucide-react';
+import { Loader2, Music, WifiOff, CheckCircle2, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface VideoPlayerProps {
   videoId: string | null;
+  nextVideoId?: string | null; // NEW: Tells the engine what to preload
   videoTitle?: string | null;
   videoThumbnail?: string | null;
   isHost: boolean;
@@ -16,8 +17,11 @@ interface VideoPlayerProps {
   onPlayerReady: (controls: any) => void;
 }
 
+type Deck = 'A' | 'B';
+
 export const VideoPlayer = ({
   videoId,
+  nextVideoId,
   videoTitle,
   videoThumbnail,
   isHost,
@@ -27,68 +31,146 @@ export const VideoPlayer = ({
   onPause,
   onPlayerReady,
 }: VideoPlayerProps) => {
-  const containerId = 'youtube-player';
+  
+  // State Machine
+  const [activeDeck, setActiveDeck] = useState<Deck>('A');
+  const [preloadedVideo, setPreloadedVideo] = useState<string | null>(null);
+  
+  // Tracking Refs
+  const currentVidA = useRef<string | null>(null);
+  const currentVidB = useRef<string | null>(null);
+  const isPreloadingRef = useRef<boolean>(false);
 
-  // We pass the "Origin" fix directly here in the hooks options if needed,
-  // but we handled it inside the hook itself.
-  const { 
-    isReady, 
-    loadVideo, 
-    play, 
-    pause, 
-    seekTo, 
-    getCurrentTime, 
-    setPlaybackRate, 
-    getPlayerState,
-    unmute,
-    mute,
-    error 
-  } = useYouTubePlayer({
-    containerId,
-    onReady: () => {
-      console.log("[VideoPlayer] Ready!");
-    },
-    onStateChange: (state) => {
+  // --- SAFE EVENT ROUTING ---
+  // Only trigger global play/pause events if they come from the ACTIVE deck.
+  // We don't want the silent pre-loading deck to pause the whole room!
+  const handleStateChange = useCallback((deck: Deck, state: number) => {
+    if (deck === activeDeck) {
       if (state === 1) onPlay();
       if (state === 2) onPause();
-    },
+    }
+  }, [activeDeck, onPlay, onPause]);
+
+  // --- INITIALIZE BOTH DECKS ---
+  const deckA = useYouTubePlayer({
+    containerId: 'deck-a',
+    onStateChange: (state) => handleStateChange('A', state),
   });
 
-  // Expose controls to parent (Room.tsx)
+  const deckB = useYouTubePlayer({
+    containerId: 'deck-b',
+    onStateChange: (state) => handleStateChange('B', state),
+  });
+
+  // --- EXPOSE ACTIVE DECK CONTROLS TO OMEGA ENGINE ---
   useEffect(() => {
-    if (isReady) {
+    const activeControls = activeDeck === 'A' ? deckA : deckB;
+    if (activeControls.isReady) {
       onPlayerReady({
-        getCurrentTime,
-        seekTo,
-        setPlaybackRate,
-        play,
-        pause,
-        getPlayerState,
-        loadVideo, // Parent can still call this if needed
-        unmute,
-        mute
+        getCurrentTime: activeControls.getCurrentTime,
+        seekTo: activeControls.seekTo,
+        setPlaybackRate: activeControls.setPlaybackRate,
+        play: activeControls.play,
+        pause: activeControls.pause,
+        getPlayerState: activeControls.getPlayerState,
+        loadVideo: () => {}, // Disabled external loading; handled internally now
+        unmute: activeControls.unmute,
+        mute: activeControls.mute
       });
     }
-  }, [isReady, onPlayerReady, getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, loadVideo, unmute, mute]);
+  }, [activeDeck, deckA.isReady, deckB.isReady, onPlayerReady]);
 
-  // --- THE FIX: AUTO-LOAD VIDEO ---
-  // Watch for videoId changes OR player becoming ready.
-  // If we have a videoId and the player is ready, LOAD IT.
+  // --- THE CROSSFADER: MAIN VIDEO PLAYBACK ---
   useEffect(() => {
-    if (videoId && isReady) {
-      console.log(`[VideoPlayer] Auto-loading video: ${videoId}`);
-      loadVideo(videoId);
+    if (!videoId) return;
+
+    if (activeDeck === 'A') {
+       if (currentVidB.current === videoId) {
+          // Perfect! It was preloaded in B. Instant Swap.
+          setActiveDeck('B');
+          deckB.seekTo(0);
+          deckB.unmute();
+          if (isPlaying) deckB.play();
+       } else if (currentVidA.current !== videoId) {
+          // Unplanned track. Force load in A.
+          currentVidA.current = videoId;
+          deckA.loadVideo(videoId);
+          deckA.unmute();
+       }
+    } else {
+       // Active Deck is B
+       if (currentVidA.current === videoId) {
+          // It was preloaded in A. Instant Swap.
+          setActiveDeck('A');
+          deckA.seekTo(0);
+          deckA.unmute();
+          if (isPlaying) deckA.play();
+       } else if (currentVidB.current !== videoId) {
+          // Unplanned track. Force load in B.
+          currentVidB.current = videoId;
+          deckB.loadVideo(videoId);
+          deckB.unmute();
+       }
     }
-  }, [videoId, isReady, loadVideo]);
+  }, [videoId]); // Runs when Host changes the song
+
+  // --- THE PHANTOM PRE-LOADER ---
+  useEffect(() => {
+    if (!nextVideoId || !deckA.isReady || !deckB.isReady) return;
+
+    const standbyDeck = activeDeck === 'A' ? deckB : deckA;
+    const standbyVidRef = activeDeck === 'A' ? currentVidB : currentVidA;
+
+    if (standbyVidRef.current !== nextVideoId && !isPreloadingRef.current) {
+        isPreloadingRef.current = true;
+        standbyVidRef.current = nextVideoId;
+        
+        console.log(`[Phantom] Pre-loading ${nextVideoId} into Deck ${activeDeck === 'A' ? 'B' : 'A'}`);
+        
+        standbyDeck.mute(); // VERY IMPORTANT
+        standbyDeck.loadVideo(nextVideoId);
+        
+        // Force YouTube to download the audio chunk to RAM
+        setTimeout(() => standbyDeck.play(), 500); 
+        
+        // Let it buffer for 2 seconds, then pause and reset to 0:00
+        setTimeout(() => {
+            standbyDeck.pause();
+            standbyDeck.seekTo(0);
+            setPreloadedVideo(nextVideoId);
+            isPreloadingRef.current = false;
+            console.log(`[Phantom] Successfully cached ${nextVideoId} in RAM.`);
+        }, 2500);
+    }
+  }, [nextVideoId, activeDeck, deckA.isReady, deckB.isReady]);
+
 
   return (
     <div className="relative w-full aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/10 group">
-      {/* YouTube Container */}
-      <div id={containerId} className="w-full h-full" />
+      
+      {/* DECK A */}
+      <div 
+        className={cn(
+          "absolute inset-0 transition-opacity duration-300",
+          activeDeck === 'A' ? "opacity-100 z-10" : "opacity-0 -z-10 pointer-events-none"
+        )}
+      >
+        <div id="deck-a" className="w-full h-full" />
+      </div>
+
+      {/* DECK B */}
+      <div 
+        className={cn(
+          "absolute inset-0 transition-opacity duration-300",
+          activeDeck === 'B' ? "opacity-100 z-10" : "opacity-0 -z-10 pointer-events-none"
+        )}
+      >
+        <div id="deck-b" className="w-full h-full" />
+      </div>
 
       {/* Overlay: No Video Selected */}
       {!videoId && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-secondary/30 backdrop-blur-sm z-10">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-secondary/30 backdrop-blur-sm z-20">
           <div className="p-6 rounded-full bg-background/10 mb-4 animate-pulse-glow">
             <Music className="w-12 h-12 text-primary" />
           </div>
@@ -99,36 +181,38 @@ export const VideoPlayer = ({
         </div>
       )}
 
-      {/* Overlay: Error State */}
-      {error && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20">
-          <WifiOff className="w-12 h-12 text-destructive mb-4" />
-          <p className="text-lg text-destructive font-medium">Video Unavailable</p>
-        </div>
-      )}
-
-      {/* Overlay: Loading State */}
-      {videoId && !isReady && !error && (
+      {/* Overlay: Loading State (Only shows if Dual-Deck missed the preload) */}
+      {videoId && ((activeDeck === 'A' && !deckA.isReady) || (activeDeck === 'B' && !deckB.isReady)) && (
         <div className="absolute inset-0 flex items-center justify-center bg-black z-20">
           <Loader2 className="w-10 h-10 text-primary animate-spin" />
         </div>
       )}
 
-      {/* Title Overlay (Bottom) */}
+      {/* Title & Status Overlay */}
       <AnimatePresence>
         {videoTitle && (
           <motion.div 
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black/90 via-black/50 to-transparent pointer-events-none z-10"
+            className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black/90 via-black/50 to-transparent pointer-events-none z-20 flex justify-between items-end"
           >
-            <h3 className="text-lg font-bold text-white line-clamp-1">{videoTitle}</h3>
-            {isSynced && !isHost && (
-              <div className="flex items-center gap-2 mt-2 text-sync-success text-sm font-medium">
-                <CheckCircle2 className="w-4 h-4" />
-                Synced with Host
-              </div>
+            <div>
+              <h3 className="text-lg font-bold text-white line-clamp-1">{videoTitle}</h3>
+              {isSynced && !isHost && (
+                <div className="flex items-center gap-2 mt-2 text-sync-success text-sm font-medium">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Synced with Host
+                </div>
+              )}
+            </div>
+            
+            {/* Phantom Cache Indicator */}
+            {preloadedVideo === nextVideoId && nextVideoId && (
+               <div className="flex items-center gap-1 text-xs text-blue-400 bg-blue-900/30 px-2 py-1 rounded-md backdrop-blur-md border border-blue-500/20">
+                 <Zap className="w-3 h-3 fill-current" />
+                 Next track cached
+               </div>
             )}
           </motion.div>
         )}
