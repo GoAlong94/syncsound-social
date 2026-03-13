@@ -12,12 +12,10 @@ import { getDeviceInfo } from '@/utils/deviceInfo';
 class KalmanFilter {
   private r: number; private q: number; private p: number; 
   private x: number; private k: number;
-
   constructor(measurementNoise = 10, processNoise = 0.1, initialError = 1, initialEstimate = 0) {
     this.r = measurementNoise; this.q = processNoise; 
     this.p = initialError; this.x = initialEstimate; this.k = 0;
   }
-
   filter(measurement: number): number {
     if (this.x === 0) { this.x = measurement; return measurement; }
     this.p = this.p + this.q; 
@@ -32,63 +30,27 @@ class NTPAnalyzer {
   private history: { rtt: number, offset: number }[] = [];
   private emaOffset: number | null = null;
   private readonly alpha = 0.15; 
-
   addSample(rtt: number, offset: number) {
     this.history.push({ rtt, offset });
     if (this.history.length > 30) this.history.shift();
   }
-
   getMetrics(): { offset: number, jitter: number, rtt: number } {
     if (this.history.length === 0) return { offset: 0, jitter: 0, rtt: 0 };
     if (this.history.length < 5) {
        const latest = this.history[this.history.length - 1];
        return { offset: latest.offset, jitter: 50, rtt: latest.rtt };
     }
-
     const sorted = [...this.history].sort((a, b) => a.rtt - b.rtt);
     const bestPackets = sorted.slice(Math.floor(sorted.length * 0.1), Math.floor(sorted.length * 0.5));
-
     let sumOffset = 0, sumRtt = 0;
     bestPackets.forEach(s => { sumOffset += s.offset; sumRtt += s.rtt; });
     const avgOffset = sumOffset / bestPackets.length;
     const avgRtt = sumRtt / bestPackets.length;
-
     const variance = bestPackets.reduce((acc, val) => acc + Math.pow(val.rtt - avgRtt, 2), 0) / bestPackets.length;
-    
     if (this.emaOffset === null) this.emaOffset = avgOffset;
     else this.emaOffset = (this.alpha * avgOffset) + ((1 - this.alpha) * this.emaOffset);
-
     return { offset: this.emaOffset, jitter: Math.sqrt(variance), rtt: avgRtt };
   }
-}
-
-class PIDController {
-  private kp: number; private ki: number; private kd: number;
-  private integral: number = 0; private prevError: number = 0;
-  private minOut: number; private maxOut: number;
-  private derivative: number = 0;
-
-  constructor(kp: number, ki: number, kd: number, minOut: number, maxOut: number) {
-    this.kp = kp; this.ki = ki; this.kd = kd; 
-    this.minOut = minOut; this.maxOut = maxOut;
-  }
-
-  calculate(error: number, dt: number): number {
-    if (dt <= 0) return 0;
-    const p = this.kp * error;
-    this.integral += error * dt;
-    
-    if (this.integral * this.ki > this.maxOut) this.integral = this.maxOut / this.ki;
-    else if (this.integral * this.ki < this.minOut) this.integral = this.minOut / this.ki;
-
-    const rawD = (error - this.prevError) / dt;
-    this.derivative = (0.7 * rawD) + (0.3 * this.derivative); 
-    const d = this.kd * this.derivative;
-    this.prevError = error;
-
-    return Math.max(this.minOut, Math.min(this.maxOut, p + (this.ki * this.integral) + d));
-  }
-  reset() { this.integral = 0; this.prevError = 0; this.derivative = 0; }
 }
 
 const getAudioHardwareOffset = (os: string, browser: string): number => {
@@ -126,7 +88,6 @@ export const useSyncEngine = ({
   const [connectedDevices, setConnectedDevices] = useState<PresenceState[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('unsynced');
   
-  // LIVE UI STATS
   const [latency, setLatency] = useState<number>(0);
   const [networkJitter, setNetworkJitter] = useState<number>(0);
   const [lastSyncDelta, setLastSyncDelta] = useState<number>(0);
@@ -146,58 +107,34 @@ export const useSyncEngine = ({
   
   const epochRef = useRef<EpochState>({ isPlaying: false, startNetworkTime: 0, startVideoTime: 0, videoId: null, updateId: 0 });
 
-  const isColdStartRef = useRef<boolean>(true);
-  const warmPenaltyPID = useRef(new PIDController(0.6, 0.05, 0.1, -0.200, 1.000)); 
-  const currentWarmPenalty = useRef<number>(deviceInfo.current.os === 'iOS' ? 0.350 : 0.150);
-  
   const ignoreSyncUntil = useRef<number>(0);
   const softGlideUntil = useRef<number>(0);
-  const lastSeekTime = useRef<number>(0);
   const lastHostBroadcastTime = useRef<number>(0);
   const consecutiveMisses = useRef<number>(0);
   const wasPlayingRef = useRef<boolean>(false);
   const catchupTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  // --- TELEMETRY & LOG AGGREGATION ---
   const syncLogs = useRef<any[]>([]);
-  const collectedLogsRef = useRef<Record<string, any[]>>({}); // Holds logs gathered from all devices
+  const collectedLogsRef = useRef<Record<string, any[]>>({});
 
   const logEvent = useCallback((e: string, data: any) => {
     syncLogs.current.push({ t: new Date().toISOString(), r: isHost ? 'HOST' : 'JOINER', e, ...data });
     if (syncLogs.current.length > 2500) syncLogs.current.shift();
   }, [isHost]);
 
-  // Master Scatter-Gather Download Function
   const downloadLogs = useCallback(() => {
     if (isHost && channelRef.current) {
-      // 1. Gather Host's own logs
-      collectedLogsRef.current = {
-        [`HOST_${deviceInfo.current.os}_${userId.slice(0,5)}`]: syncLogs.current
-      };
-      
-      // 2. Broadcast request to all joiners
+      collectedLogsRef.current = { [`HOST_${deviceInfo.current.os}_${userId.slice(0,5)}`]: syncLogs.current };
       logEvent('BROADCAST_LOG_REQUEST', {});
       channelRef.current.send({ type: 'broadcast', event: 'request_logs', payload: {} });
-      
-      // 3. Wait 2 seconds for all joiners to upload their payloads, then download the master file
       setTimeout(() => {
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
-        const a = document.createElement('a');
-        a.href = dataStr; a.download = `sync_omega_ALL_DEVICES_${Date.now()}.json`;
+        const a = document.createElement('a'); a.href = dataStr; a.download = `sync_omega_ALL_DEVICES_${Date.now()}.json`;
         document.body.appendChild(a); a.click(); a.remove();
       }, 2000);
-    } else {
-      // Fallback for Joiners downloading their own local logs manually
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(syncLogs.current, null, 2));
-      const a = document.createElement('a');
-      a.href = dataStr; a.download = `sync_omega_JOINER_${userId.slice(0,5)}.json`;
-      document.body.appendChild(a); a.click(); a.remove();
     }
   }, [isHost, userId, logEvent]);
 
-  // ============================================================================
-  // SYSTEM & BACKGROUND MANAGEMENT
-  // ============================================================================
   useEffect(() => {
     const acquireWakeLock = async () => {
       if ('wakeLock' in navigator && !wakeLockRef.current) {
@@ -219,26 +156,25 @@ export const useSyncEngine = ({
     return () => document.removeEventListener('visibilitychange', handleVis);
   }, [isHost, logEvent, userId]);
 
-  // ============================================================================
-  // MEDIA MANIPULATORS
-  // ============================================================================
   const executeHardSeek = useCallback((time: number, reason: string, lockoutMs = 2500) => {
     logEvent('HARD_SEEK', { target: time, reason });
     if (catchupTimeout.current) { clearTimeout(catchupTimeout.current); catchupTimeout.current = null; }
-    
     handlers.current.seekTo(time);
     if (epochRef.current.isPlaying) handlers.current.play();
     else handlers.current.pause();
-    
     ignoreSyncUntil.current = Date.now() + lockoutMs; 
   }, [logEvent]);
 
-  const executeSoftGlide = useCallback((driftSeconds: number) => {
-      const rate = 0.90;
-      const virtualLossPerSec = 1.0 - rate; 
-      const holdTimeMs = Math.min((driftSeconds / virtualLossPerSec) * 1000, 1500); 
+  // 🚀 DUAL-DIRECTION SOFT GLIDE 
+  const executeSoftGlide = useCallback((driftSeconds: number, direction: 'ahead' | 'behind') => {
+      // YouTube exclusively supports: 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0
+      // 0.75x loses 0.25s of video per second. 1.25x gains 0.25s of video per second.
+      const rate = direction === 'ahead' ? 0.75 : 1.25;
+      const virtualDiffPerSec = 0.25; 
       
-      logEvent('SOFT_GLIDE', { driftSeconds, holdTimeMs, rate });
+      const holdTimeMs = Math.min((driftSeconds / virtualDiffPerSec) * 1000, 2000); 
+      
+      logEvent('SOFT_GLIDE', { direction, driftSeconds, holdTimeMs, rate });
       handlers.current.setPlaybackRate(rate);
       
       softGlideUntil.current = Date.now() + holdTimeMs;
@@ -282,7 +218,6 @@ export const useSyncEngine = ({
       if (!isHost && payload.target === userId) {
         const rtt = kalmanRtt.current.filter(Date.now() - payload.t); 
         const offset = payload.ht - payload.t - (rtt / 2);
-        
         ntpAnalyzer.current.addSample(rtt, offset);
         const metrics = ntpAnalyzer.current.getMetrics();
         
@@ -298,7 +233,6 @@ export const useSyncEngine = ({
       }
     });
 
-    // --- REMOTE LOG GATHERING PROTOCOL ---
     channel.on('broadcast', { event: 'request_logs' }, () => {
       if (isHost) return;
       logEvent('UPLOADING_LOGS_TO_HOST', {});
@@ -319,7 +253,6 @@ export const useSyncEngine = ({
 
       if (payload.videoId && payload.videoId !== currentVideoIdRef.current) {
         currentVideoIdRef.current = payload.videoId;
-        isColdStartRef.current = true;
         handlers.current.onVideoChange?.(payload.videoId, "", "");
         executeHardSeek(0, 'Video Changed', 2500);
         return;
@@ -331,13 +264,8 @@ export const useSyncEngine = ({
          const dacOffset = getAudioHardwareOffset(deviceInfo.current.os, deviceInfo.current.browser);
          const expectedTime = payload.startVideoTime + ((Date.now() + clockOffsetRef.current - payload.startNetworkTime) / 1000) - dacOffset;
          
-         if (isColdStartRef.current) {
-             const coldPenalty = deviceInfo.current.os === 'iOS' ? 1.800 : 1.200;
-             executeHardSeek(expectedTime + coldPenalty, `Cold Start Resume: +${coldPenalty}s`, 3500);
-             isColdStartRef.current = false; 
-         } else {
-             executeHardSeek(expectedTime + currentWarmPenalty.current, `Warm Resume: +${currentWarmPenalty.current.toFixed(3)}s`);
-         }
+         // Let the autonomous loop handle seeking, just kickstart playback
+         handlers.current.play();
       }
       
       if (!payload.isPlaying) {
@@ -376,11 +304,22 @@ export const useSyncEngine = ({
     const interval = setInterval(() => {
       const epoch = epochRef.current;
       if (!epoch.videoId) return;
+      
+      // 🛡️ THE BUFFERING BLACK HOLE PROTECTION 🛡️
+      // State 3 = Buffering, State -1 = Unstarted
+      const playerState = handlers.current.getPlayerState();
+      if (playerState === 3 || playerState === -1) {
+          logEvent('BUFFER_PROTECT', { state: playerState });
+          setSyncStatus('syncing');
+          // Extend lock so we don't seek the instant it starts
+          ignoreSyncUntil.current = Date.now() + 1000;
+          return; 
+      }
 
       if (!epoch.isPlaying) {
           wasPlayingRef.current = false;
           if (catchupTimeout.current) { clearTimeout(catchupTimeout.current); catchupTimeout.current = null; }
-          if (handlers.current.getPlayerState() === 1) handlers.current.pause();
+          if (playerState === 1) handlers.current.pause();
           
           const localTime = handlers.current.getCurrentTime();
           const drift = Math.abs(localTime - epoch.startVideoTime);
@@ -388,7 +327,7 @@ export const useSyncEngine = ({
           setLastSyncDelta(Math.round(drift * 1000));
           lastSyncDeltaRef.current = Math.round(drift * 1000);
           
-          if (drift > 0.020) handlers.current.seekTo(epoch.startVideoTime);
+          if (drift > 0.050) handlers.current.seekTo(epoch.startVideoTime);
           setSyncStatus('synced');
           return;
       }
@@ -408,16 +347,6 @@ export const useSyncEngine = ({
       
       const tolerance = Math.max(0.015, Math.min(0.080, (networkJitterRef.current / 1000) * 1.2));
 
-      const justResumed = !wasPlayingRef.current;
-      wasPlayingRef.current = true;
-
-      if (justResumed && absDrift > tolerance) {
-          const penalty = isColdStartRef.current ? (deviceInfo.current.os === 'iOS' ? 1.8 : 1.2) : currentWarmPenalty.current;
-          executeHardSeek(expectedTime + penalty, `Resume Strike. Pen: ${penalty.toFixed(3)}s`, 3500);
-          if (isColdStartRef.current) isColdStartRef.current = false;
-          return;
-      }
-
       if (absDrift > tolerance) {
           consecutiveMisses.current += 1;
           
@@ -426,47 +355,29 @@ export const useSyncEngine = ({
               
               if (drift > 0) {
                   // BEHIND
-                  const dt = (Date.now() - lastSeekTime.current) / 1000;
-                  if (dt > 0 && dt < 15 && !isColdStartRef.current) {
-                      currentWarmPenalty.current += warmPenaltyPID.current.calculate(absDrift, dt);
-                      currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
+                  if (absDrift <= 0.400) {
+                      // Fast Glide to catch up smoothly
+                      executeSoftGlide(absDrift, 'behind');
+                  } else {
+                      executeHardSeek(expectedTime, `Macro-Behind: ${absDrift.toFixed(3)}s`, 2500);
                   }
-                  const penalty = isColdStartRef.current ? 1.5 : currentWarmPenalty.current;
-                  executeHardSeek(expectedTime + penalty, `Macro-Behind: ${absDrift.toFixed(3)}s`, 2500);
-                  lastSeekTime.current = Date.now();
-                  isColdStartRef.current = false;
               } else {
                   // AHEAD
-                  if (Date.now() - lastSeekTime.current < 5000 && !isColdStartRef.current) {
-                      currentWarmPenalty.current -= (absDrift * 0.4);
-                      currentWarmPenalty.current = Math.max(0.100, currentWarmPenalty.current);
-                  }
-                  lastSeekTime.current = 0;
-
-                  // 🎧 EXPANDED SOFT GLIDE THRESHOLD (Now glides up to 150ms leads instead of stutter pausing)
-                  if (absDrift <= 0.150) {
-                      executeSoftGlide(absDrift);
+                  if (absDrift <= 0.400) {
+                      // Slow Glide to lose time smoothly
+                      executeSoftGlide(absDrift, 'ahead');
                   } else {
-                      // Only pause if massively ahead (>150ms)
-                      const pauseMs = Math.round(absDrift * 1000) - 5;
-                      if (pauseMs > 10) {
-                          logEvent('MICRO_PAUSE', { pauseMs });
-                          if (catchupTimeout.current) clearTimeout(catchupTimeout.current);
-                          handlers.current.pause();
-                          ignoreSyncUntil.current = Date.now() + pauseMs + 400;
-                          catchupTimeout.current = setTimeout(() => { handlers.current.play(); catchupTimeout.current = null; }, pauseMs);
-                      }
+                      executeHardSeek(expectedTime, `Macro-Ahead: ${absDrift.toFixed(3)}s`, 2500);
                   }
               }
           }
       } else {
           consecutiveMisses.current = 0;
-          warmPenaltyPID.current.reset();
           setSyncStatus('synced');
-          if (handlers.current.getPlayerState() !== 1) handlers.current.play();
+          if (playerState !== 1) handlers.current.play();
       }
 
-    }, 200); 
+    }, 300); 
     return () => clearInterval(interval);
   }, [isHost, logEvent, executeHardSeek, executeSoftGlide]);
 
