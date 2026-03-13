@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Copy, Check, Crown, Share2, SkipBack, SkipForward, Download } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -86,27 +86,14 @@ const Room = () => {
   });
 
   const {
-    queue,
-    addToQueue,
-    removeFromQueue,
-    playNext,
-    playPrevious,
-    playAtIndex,
-    syncQueue,
-    moveItem,
-    hasNext,
-    hasPrevious,
-    isQueueFull,
+    queue, addToQueue, removeFromQueue, playNext, playPrevious, playAtIndex, syncQueue, moveItem, hasNext, hasPrevious, isQueueFull,
   } = useVideoQueue({
     onVideoChange: (vid, title, thumb) => {
       setVideoId(vid);
       setVideoTitle(title);
       setVideoThumbnail(thumb);
       setCurrentVideoId(vid); 
-      
-      if (isHost) {
-        broadcastVideoChange(vid, title, thumb);
-      }
+      if (isHost) broadcastVideoChange(vid, title, thumb);
     },
     broadcastQueueUpdate: isHost ? broadcastQueueUpdate : undefined,
   });
@@ -116,23 +103,17 @@ const Room = () => {
   }, []);
 
   const handleVideoSelect = useCallback((videoId: string, title: string, thumbnail: string) => {
-    if (isHost) {
-      addToQueue(videoId, title, thumbnail);
-    }
+    if (isHost) addToQueue(videoId, title, thumbnail);
   }, [isHost, addToQueue]);
 
   const handlePlay = useCallback(() => {
     setIsPlaying(true);
-    if (isHost) {
-      broadcastPlay();
-    }
+    if (isHost) broadcastPlay();
   }, [isHost, broadcastPlay]);
 
   const handlePause = useCallback(() => {
     setIsPlaying(false);
-    if (isHost) {
-      broadcastPause();
-    }
+    if (isHost) broadcastPause();
   }, [isHost, broadcastPause]);
 
   const handleSync = useCallback(() => {
@@ -163,70 +144,69 @@ const Room = () => {
           text: `Join my audio party! Room code: ${roomId}`,
           url: shareUrl,
         });
-      } catch (error) {
-        // User cancelled share
-      }
+      } catch (error) {}
     } else {
       await navigator.clipboard.writeText(shareUrl);
       toast.success('Share link copied!');
     }
   };
 
-  // Find the next video for the Convoy Phantom Pre-loader
+  // --- NEW: KICK JOINERS IF HOST EXITS ---
+  useEffect(() => {
+    if (isHost || connectedDevices.length === 0) return;
+    
+    const hostActive = connectedDevices.some(d => d.isHost);
+    if (!hostActive) {
+       // Wait 4 seconds in case the host just quickly refreshed the page
+       const timer = setTimeout(() => {
+          toast.error("The Host has ended the session.");
+          navigate('/');
+       }, 4000);
+       return () => clearTimeout(timer);
+    }
+  }, [connectedDevices, isHost, navigate]);
+
   const currentQueueIndex = queue.items.findIndex(item => item.id === videoId);
   const nextVideoId = (currentQueueIndex !== -1 && currentQueueIndex < queue.items.length - 1)
-    ? queue.items[currentQueueIndex + 1].id
-    : null;
+    ? queue.items[currentQueueIndex + 1].id : null;
 
   return (
     <div className="min-h-screen flex flex-col p-4 md:p-6">
       <motion.header
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
+        initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}
         className="flex items-center justify-between mb-6"
       >
-        <button
-          onClick={() => navigate('/')}
-          className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
-        >
+        <button onClick={() => navigate('/')} className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors">
           <ArrowLeft className="w-5 h-5" />
           <span className="hidden sm:inline">Leave Room</span>
         </button>
 
         <div className="flex items-center gap-3">
-          {/* SCATTER-GATHER LOG DOWNLOAD BUTTON */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={downloadLogs}
-            className="hidden sm:flex items-center gap-2 text-xs font-mono bg-slate-800 text-slate-300 border-slate-600 hover:bg-slate-700"
-          >
-            <Download className="w-3 h-3" />
-            Get Logs
-          </Button>
+          
+          {/* FIX: Get Logs Button strictly limited to Host, visible on mobile */}
+          {isHost && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={downloadLogs}
+              className="flex items-center gap-2 text-xs font-mono bg-slate-800 text-slate-300 border-slate-600 hover:bg-slate-700"
+            >
+              <Download className="w-3 h-3" />
+              <span className="hidden sm:inline">Get Logs</span>
+            </Button>
+          )}
 
           <div className="flex items-center gap-2 px-4 py-2 rounded-xl glass">
             {isHost && <Crown className="w-4 h-4 text-sync-warning" />}
-            <span className="text-foreground font-mono font-bold tracking-wider">
-              {roomId}
-            </span>
-            <button
-              onClick={copyRoomCode}
-              className="p-1.5 rounded-lg hover:bg-secondary transition-colors"
-            >
-              {copied ? (
-                <Check className="w-4 h-4 text-sync-success" />
-              ) : (
-                <Copy className="w-4 h-4 text-muted-foreground" />
-              )}
+            <span className="text-foreground font-mono font-bold tracking-wider">{roomId}</span>
+            <button onClick={copyRoomCode} className="p-1.5 rounded-lg hover:bg-secondary transition-colors">
+              {copied ? <Check className="w-4 h-4 text-sync-success" /> : <Copy className="w-4 h-4 text-muted-foreground" />}
             </button>
           </div>
 
           <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={shareRoom}
-            className="p-3 rounded-xl bg-primary text-primary-foreground"
+            whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+            onClick={shareRoom} className="p-3 rounded-xl bg-primary text-primary-foreground"
           >
             <Share2 className="w-5 h-5" />
           </motion.button>
@@ -234,9 +214,7 @@ const Room = () => {
       </motion.header>
 
       <motion.div
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
+        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
         className="flex justify-center mb-6"
       >
         <DeviceCounter devices={connectedDevices} latency={latency} />
@@ -246,12 +224,9 @@ const Room = () => {
         <div className="flex-1 flex flex-col">
           
           <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.2 }}
+            initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 }}
             className="mb-4 relative"
           >
-            {/* ABSOLUTE DEPLOYMENT VERIFICATION BUG */}
             <div className="absolute -top-6 right-0 text-[10px] text-zinc-600 font-mono tracking-widest uppercase">
                Engine: {ENGINE_VERSION}
             </div>
@@ -272,11 +247,7 @@ const Room = () => {
           </motion.div>
 
           {isHost && videoId && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex items-center justify-center gap-4 mb-4"
-            >
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center justify-center gap-4 mb-4">
               <Button variant="outline" size="sm" onClick={playPrevious} disabled={!hasPrevious}>
                 <SkipBack className="w-4 h-4 mr-1" /> Previous
               </Button>
@@ -287,27 +258,15 @@ const Room = () => {
           )}
 
           {isHost && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3 }}
-              className="mb-4"
-            >
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="mb-4">
               <YouTubeLinkInput onVideoSelect={handleVideoSelect} disabled={isQueueFull} />
-              {isQueueFull && (
-                <p className="text-xs text-sync-warning mt-2 text-center">Queue is full (max 10 videos)</p>
-              )}
+              {isQueueFull && <p className="text-xs text-sync-warning mt-2 text-center">Queue is full (max 10 videos)</p>}
             </motion.div>
           )}
 
           <AnimatePresence>
             {!isHost && videoId && !isSynced && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="py-4"
-              >
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="py-4">
                 <SyncButton onSync={handleSync} isSynced={isSynced} />
               </motion.div>
             )}
