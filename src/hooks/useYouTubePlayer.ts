@@ -24,27 +24,34 @@ export const useYouTubePlayer = ({
   const [isReady, setIsReady] = useState(false);
   const [isApiLoaded, setIsApiLoaded] = useState(false);
   const playerRef = useRef<any>(null);
-  
-  // FIX: This remembers the video you tried to play before the player was ready
   const pendingVideoIdRef = useRef<string | null>(null);
 
+  // 1. SAFE MULTI-INSTANCE API LOADING
   useEffect(() => {
     if (window.YT && window.YT.Player) {
       setIsApiLoaded(true);
       return;
     }
+
+    const handleApiLoaded = () => setIsApiLoaded(true);
+    window.addEventListener('youtube-api-ready', handleApiLoaded);
+
     const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
-    if (existingScript) {
-      window.onYouTubeIframeAPIReady = () => setIsApiLoaded(true);
-      return;
+    if (!existingScript) {
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      const firstScriptTag = document.getElementsByTagName('script')[0];
+      firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+      
+      window.onYouTubeIframeAPIReady = () => { 
+        window.dispatchEvent(new Event('youtube-api-ready'));
+      };
     }
-    const tag = document.createElement('script');
-    tag.src = 'https://www.youtube.com/iframe_api';
-    const firstScriptTag = document.getElementsByTagName('script')[0];
-    firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
-    window.onYouTubeIframeAPIReady = () => { setIsApiLoaded(true); };
+
+    return () => window.removeEventListener('youtube-api-ready', handleApiLoaded);
   }, []);
 
+  // 2. PLAYER INITIALIZATION
   useEffect(() => {
     if (!isApiLoaded || playerRef.current) return;
     const container = document.getElementById(containerId);
@@ -64,7 +71,7 @@ export const useYouTubePlayer = ({
           fs: 0,
           iv_load_policy: 3,
           disablekb: 1,
-          origin: window.location.origin, // Fix for postMessage error
+          origin: window.location.origin,
         },
         events: {
           onReady: (event: any) => {
@@ -72,9 +79,7 @@ export const useYouTubePlayer = ({
             setIsReady(true);
             onReady?.();
             
-            // FIX: Play the pending video immediately when ready
             if (pendingVideoIdRef.current) {
-              console.log("[YouTubeHook] Loading queued video:", pendingVideoIdRef.current);
               event.target.loadVideoById(pendingVideoIdRef.current);
               pendingVideoIdRef.current = null;
             }
@@ -87,13 +92,8 @@ export const useYouTubePlayer = ({
   }, [isApiLoaded, containerId, onReady, onStateChange, onError]);
 
   const loadVideo = useCallback((videoId: string) => {
-    if (player && isReady) {
-      player.loadVideoById(videoId);
-    } else {
-      // If player not ready, queue it!
-      console.log("[YouTubeHook] Player not ready, queuing:", videoId);
-      pendingVideoIdRef.current = videoId;
-    }
+    if (player && isReady) player.loadVideoById(videoId);
+    else pendingVideoIdRef.current = videoId;
   }, [player, isReady]);
 
   const play = useCallback(() => { if (player && isReady) player.playVideo(); }, [player, isReady]);
@@ -105,17 +105,5 @@ export const useYouTubePlayer = ({
   const mute = useCallback(() => { if (player && isReady) player.mute(); }, [player, isReady]);
   const getPlayerState = useCallback((): number => { return (player && isReady) ? player.getPlayerState() : -1; }, [player, isReady]);
 
-  return {
-    player,
-    isReady,
-    loadVideo,
-    play,
-    pause,
-    seekTo,
-    getCurrentTime,
-    setPlaybackRate,
-    unmute,
-    mute,
-    getPlayerState,
-  };
+  return { player, isReady, loadVideo, play, pause, seekTo, getCurrentTime, setPlaybackRate, unmute, mute, getPlayerState };
 };
