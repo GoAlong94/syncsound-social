@@ -273,7 +273,7 @@ export const useSyncEngine = ({
 
     channel.on('presence', { event: 'sync' }, () => {
       setConnectedDevices(Object.values(channel.presenceState()).flat().map((p: any) => ({
-        id: p.id, isHost: p.isHost, joinedAt: p.joinedAt, os: p.os || '?', browser: p.browser || '?', syncStatus: p.syncStatus || 'unsynced', latency: p.latency || 0, jitter: p.jitter || 0, cachedVideoId: p.cachedVideoId
+        id: p.id, isHost: p.isHost, joinedAt: p.joinedAt, os: p.os || '?', browser: p.browser || '?', syncStatus: p.syncStatus || 'unsynced', latency: p.latency || 0, jitter: p.jitter || 0, cachedVideoId: p.cachedVideoId, lastSyncDelta: p.lastSyncDelta || 0
       })));
     });
 
