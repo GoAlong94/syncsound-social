@@ -1,182 +1,140 @@
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, Users, ArrowRight, Zap, Radio, Smartphone } from 'lucide-react';
+import { Music, Users, Sparkles, ArrowRight, QrCode } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
-const Home = () => {
-  const navigate = useNavigate();
-  const [roomId, setRoomId] = useState('');
+const DOMAIN_URL = "https://syncsound.lovable.app";
 
-  const generateRoomId = () => {
-    return Math.random().toString(36).substring(2, 8).toUpperCase();
+const Home = () => {
+  const [roomId, setRoomId] = useState('');
+  const [isJoining, setIsJoining] = useState(false);
+  const [showQr, setShowQr] = useState(false);
+  const navigate = useNavigate();
+
+  const handleCreateRoom = () => {
+    const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+    navigate(`/room/${newRoomId}?host=true`);
   };
 
-  const handleStartParty = useCallback(() => {
-    const newRoomId = generateRoomId();
-    navigate(`/room/${newRoomId}?host=true`);
-  }, [navigate]);
-
-  const handleJoinParty = useCallback(() => {
+  const handleJoinRoom = (e: React.FormEvent) => {
+    e.preventDefault();
     if (roomId.trim()) {
-      navigate(`/room/${roomId.toUpperCase()}`);
+      setIsJoining(true);
+      setTimeout(() => {
+        navigate(`/room/${roomId.toUpperCase()}`);
+      }, 500);
     }
-  }, [navigate, roomId]);
-
-  const features = [
-    {
-      icon: Radio,
-      title: 'Perfect Sync',
-      description: 'Millisecond-level audio synchronization across all devices',
-    },
-    {
-      icon: Smartphone,
-      title: 'Multi-Device',
-      description: 'Turn every phone into a synchronized speaker',
-    },
-    {
-      icon: Zap,
-      title: 'Zero Latency',
-      description: 'Smart calibration compensates for network delays',
-    },
-  ];
+  };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-6">
-      {/* Background Effects */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary/10 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-primary/5 rounded-full blur-3xl" />
-      </div>
+    <div className="min-h-screen flex flex-col items-center justify-center p-4 relative overflow-hidden">
+      {/* Background Gradients */}
+      <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary/20 rounded-full blur-[128px] pointer-events-none" />
+      <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-500/20 rounded-full blur-[128px] pointer-events-none" />
 
-      <div className="relative z-10 w-full max-w-lg mx-auto">
-        {/* Logo & Title */}
-        <motion.div
-          initial={{ opacity: 0, y: -30 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center mb-12"
-        >
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="z-10 w-full max-w-md space-y-8"
+      >
+        <div className="text-center space-y-4">
           <motion.div
-            animate={{ rotate: [0, 5, -5, 0] }}
-            transition={{ duration: 4, repeat: Infinity }}
-            className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-primary/20 mb-6 glow-primary"
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            transition={{ type: "spring", bounce: 0.5 }}
+            className="w-20 h-20 bg-primary/10 rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-2xl shadow-primary/20 border border-primary/20"
           >
-            <Sparkles className="w-10 h-10 text-primary" />
+            <Music className="w-10 h-10 text-primary" />
           </motion.div>
-          
-          <h1 className="text-4xl md:text-5xl font-bold mb-3">
-            <span className="text-gradient">Social Sync</span>
+          <h1 className="text-5xl font-black tracking-tight text-white drop-shadow-md">
+            Sync<span className="text-primary">Sound</span>
           </h1>
-          <p className="text-muted-foreground text-lg">
-            YouTube Audio Party
+          <p className="text-lg text-muted-foreground font-medium">
+            Flawless synchronized playback across all devices.
           </p>
-        </motion.div>
-
-        {/* Action Cards */}
-        <div className="space-y-4 mb-12">
-          {/* Start Party */}
-          <motion.button
-            initial={{ opacity: 0, x: -30 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.1 }}
-            whileHover={{ scale: 1.02, x: 5 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={handleStartParty}
-            className="w-full group"
-          >
-            <div className="relative p-6 rounded-2xl bg-gradient-primary glow-primary overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700" />
-              <div className="relative flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-xl bg-primary-foreground/20 flex items-center justify-center">
-                    <Sparkles className="w-6 h-6 text-primary-foreground" />
-                  </div>
-                  <div className="text-left">
-                    <h2 className="text-xl font-bold text-primary-foreground">
-                      Start Party
-                    </h2>
-                    <p className="text-primary-foreground/70 text-sm">
-                      Create a new room as host
-                    </p>
-                  </div>
-                </div>
-                <ArrowRight className="w-6 h-6 text-primary-foreground group-hover:translate-x-1 transition-transform" />
-              </div>
-            </div>
-          </motion.button>
-
-          {/* Join Party */}
-          <motion.div
-            initial={{ opacity: 0, x: -30 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.2 }}
-            className="p-6 rounded-2xl glass"
-          >
-            <div className="flex items-center gap-4 mb-4">
-              <div className="w-12 h-12 rounded-xl bg-secondary flex items-center justify-center">
-                <Users className="w-6 h-6 text-primary" />
-              </div>
-              <div>
-                <h2 className="text-xl font-bold text-foreground">
-                  Join Party
-                </h2>
-                <p className="text-muted-foreground text-sm">
-                  Enter a room code to join
-                </p>
-              </div>
-            </div>
-            
-            <div className="flex gap-3">
-              <Input
-                type="text"
-                placeholder="Room Code"
-                value={roomId}
-                onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-                onKeyDown={(e) => e.key === 'Enter' && handleJoinParty()}
-                maxLength={6}
-                className="flex-1 bg-secondary border-border text-center text-lg tracking-widest uppercase font-mono"
-              />
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={handleJoinParty}
-                disabled={!roomId.trim()}
-                className="px-6 rounded-xl bg-primary text-primary-foreground font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Join
-              </motion.button>
-            </div>
-          </motion.div>
         </div>
 
-        {/* Features */}
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="grid grid-cols-3 gap-4"
-        >
-          {features.map((feature, index) => (
-            <motion.div
-              key={feature.title}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 + index * 0.1 }}
-              className="text-center p-4"
+        <div className="glass p-8 rounded-3xl shadow-2xl space-y-6 border border-white/5 relative">
+          
+          <Button
+            onClick={handleCreateRoom}
+            className="w-full h-14 text-lg font-semibold rounded-2xl group transition-all duration-300 hover:shadow-primary/25 hover:shadow-xl"
+            size="lg"
+          >
+            <Sparkles className="w-5 h-5 mr-2 group-hover:rotate-12 transition-transform" />
+            Start a Party
+          </Button>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t border-white/10" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-[#0f1115] px-4 text-muted-foreground font-semibold tracking-wider">
+                Or join existing
+              </span>
+            </div>
+          </div>
+
+          <form onSubmit={handleJoinRoom} className="space-y-4">
+            <Input
+              type="text"
+              placeholder="Enter Room Code"
+              value={roomId}
+              onChange={(e) => setRoomId(e.target.value)}
+              className="h-14 text-center text-2xl font-mono tracking-[0.2em] uppercase bg-black/50 border-white/10 focus:border-primary/50 rounded-2xl"
+              maxLength={6}
+            />
+            <Button
+              type="submit"
+              variant="secondary"
+              className="w-full h-14 text-lg font-semibold rounded-2xl group transition-all"
+              disabled={roomId.length < 3 || isJoining}
             >
-              <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center mx-auto mb-3">
-                <feature.icon className="w-5 h-5 text-primary" />
-              </div>
-              <h3 className="text-sm font-medium text-foreground mb-1">
-                {feature.title}
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                {feature.description}
-              </p>
-            </motion.div>
-          ))}
-        </motion.div>
-      </div>
+              {isJoining ? (
+                "Connecting..."
+              ) : (
+                <>
+                  <Users className="w-5 h-5 mr-2" />
+                  Join Room
+                  <ArrowRight className="w-5 h-5 ml-2 opacity-0 -translate-x-2 group-hover:opacity-100 group-hover:translate-x-0 transition-all" />
+                </>
+              )}
+            </Button>
+          </form>
+        </div>
+
+        {/* QR CODE QUICK SCAN PORTAL */}
+        <div className="flex flex-col items-center justify-center mt-8">
+           <button 
+              onClick={() => setShowQr(!showQr)}
+              className="flex items-center gap-2 text-sm text-zinc-500 hover:text-white transition-colors"
+           >
+              <QrCode className="w-4 h-4" />
+              {showQr ? "Hide QR Code" : "Show Quick-Scan QR"}
+           </button>
+           
+           <AnimatePresence>
+             {showQr && (
+                <motion.div 
+                   initial={{ opacity: 0, height: 0 }}
+                   animate={{ opacity: 1, height: 'auto' }}
+                   exit={{ opacity: 0, height: 0 }}
+                   className="mt-6 flex flex-col items-center bg-white p-4 rounded-2xl shadow-2xl"
+                >
+                   <img 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(DOMAIN_URL)}`} 
+                      alt="Scan to join"
+                      className="w-32 h-32"
+                   />
+                   <p className="text-black font-bold mt-2 text-xs uppercase tracking-widest">Scan to Open</p>
+                </motion.div>
+             )}
+           </AnimatePresence>
+        </div>
+      </motion.div>
     </div>
   );
 };
