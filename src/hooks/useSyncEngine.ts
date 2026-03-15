@@ -5,10 +5,10 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v6.0-Golden-V2-Restored";
+export const ENGINE_VERSION = "v6.2-Fast-Convergence";
 
 // ============================================================================
-// PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING (GOLDEN V2)
+// PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING 
 // ============================================================================
 
 class KalmanFilter {
@@ -20,9 +20,14 @@ class KalmanFilter {
     this.p = initialError; this.x = initialEstimate; this.k = 0;
   }
 
-  filter(measurement: number): number {
+  // 🚀 UPGRADE 3: Fast-Convergence Adaptive Noise Injection
+  filter(measurement: number, dynamicQ: number = this.q): number {
     if (this.x === 0) { this.x = measurement; return measurement; }
-    this.p = this.p + this.q; 
+    
+    // Inject high process noise early on to build the baseline fast, 
+    // then tighten it to ignore late-stage jitter spikes.
+    this.p = this.p + dynamicQ; 
+    
     this.k = this.p / (this.p + this.r); 
     this.x = this.x + this.k * (measurement - this.x); 
     this.p = (1 - this.k) * this.p; 
@@ -75,20 +80,25 @@ class PIDController {
     this.minOut = minOut; this.maxOut = maxOut;
   }
 
-  calculate(error: number, dt: number): number {
+  // 🚀 UPGRADE 1: Dynamic Gain Scheduling
+  calculate(error: number, dt: number, isAggressive: boolean = false): number {
     if (dt <= 0) return 0;
+    
+    // Shift gears to Ki = 0.25 during the aggressive transient phase
+    const activeKi = isAggressive ? 0.25 : this.ki;
+    
     const p = this.kp * error;
     this.integral += error * dt;
     
-    if (this.integral * this.ki > this.maxOut) this.integral = this.maxOut / this.ki;
-    else if (this.integral * this.ki < this.minOut) this.integral = this.minOut / this.ki;
+    if (this.integral * activeKi > this.maxOut) this.integral = this.maxOut / activeKi;
+    else if (this.integral * activeKi < this.minOut) this.integral = this.minOut / activeKi;
 
     const rawD = (error - this.prevError) / dt;
     this.derivative = (0.7 * rawD) + (0.3 * this.derivative); 
     const d = this.kd * this.derivative;
     this.prevError = error;
 
-    return Math.max(this.minOut, Math.min(this.maxOut, p + (this.ki * this.integral) + d));
+    return Math.max(this.minOut, Math.min(this.maxOut, p + (activeKi * this.integral) + d));
   }
   reset() { this.integral = 0; this.prevError = 0; this.derivative = 0; }
 }
@@ -117,7 +127,7 @@ interface EpochState {
 }
 
 // ============================================================================
-// PART 3: THE DECOUPLED SYNC ENGINE (V6 HYBRID)
+// PART 2: THE DECOUPLED SYNC ENGINE
 // ============================================================================
 
 export const useSyncEngine = ({
@@ -148,6 +158,8 @@ export const useSyncEngine = ({
   const epochRef = useRef<EpochState>({ isPlaying: false, startNetworkTime: 0, startVideoTime: 0, videoId: null, updateId: 0 });
 
   const isColdStartRef = useRef<boolean>(true);
+  const playheadStartTimeRef = useRef<number>(0); 
+  
   const warmPenaltyPID = useRef(new PIDController(0.6, 0.05, 0.1, -0.200, 1.000)); 
   const currentWarmPenalty = useRef<number>(deviceInfo.current.os === 'iOS' ? 0.350 : 0.150);
   
@@ -159,11 +171,11 @@ export const useSyncEngine = ({
   const wasPlayingRef = useRef<boolean>(false);
   const catchupTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  // V4 Network Survival State
   const pingCountRef = useRef<number>(0);
   const isNtpFrozenRef = useRef<boolean>(false);
   const cachedVideoIdRef = useRef<string | null>(null);
 
+  // 15,000 Capacity Array (~50 minutes of continuous physics data)
   const syncLogs = useRef<any[]>([]);
   const collectedLogsRef = useRef<Record<string, any[]>>({});
 
@@ -176,7 +188,10 @@ export const useSyncEngine = ({
       ctx: { state: currentState, locTime: handlers.current.getCurrentTime(), jitter: networkJitterRef.current }, 
       ...data 
     });
-    if (syncLogs.current.length > 2500) syncLogs.current.shift();
+    
+    if (syncLogs.current.length > 15000) {
+        syncLogs.current.shift();
+    }
   }, [isHost]);
 
   const downloadLogs = useCallback(() => {
@@ -184,12 +199,35 @@ export const useSyncEngine = ({
       collectedLogsRef.current = { [`HOST_${deviceInfo.current.os}_${userId.slice(0,5)}`]: syncLogs.current };
       logEvent('BROADCAST_LOG_REQUEST', {});
       channelRef.current.send({ type: 'broadcast', event: 'request_logs', payload: {} });
+      
       setTimeout(() => {
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
-        const a = document.createElement('a'); a.href = dataStr; a.download = `sync_v6_ALL_DEVICES_${Date.now()}.json`;
+        const a = document.createElement('a'); a.href = dataStr; a.download = `sync_v6.2_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); a.click(); a.remove();
-      }, 2500);
+      }, 3500);
     }
+  }, [isHost, userId, logEvent]);
+
+  // THE DEATH RATTLE: Upload logs if user violently kills the app
+  useEffect(() => {
+    const handleUnload = () => {
+      if (!isHost && channelRef.current) {
+         logEvent('DEATH_RATTLE_UNLOAD');
+         channelRef.current.send({ 
+             type: 'broadcast', 
+             event: 'submit_logs', 
+             payload: { uId: userId, os: deviceInfo.current.os, logs: syncLogs.current } 
+         });
+      }
+    };
+    
+    window.addEventListener('beforeunload', handleUnload);
+    window.addEventListener('pagehide', handleUnload);
+    
+    return () => {
+       window.removeEventListener('beforeunload', handleUnload);
+       window.removeEventListener('pagehide', handleUnload);
+    };
   }, [isHost, userId, logEvent]);
 
   useEffect(() => {
@@ -224,7 +262,6 @@ export const useSyncEngine = ({
     ignoreSyncUntil.current = Date.now() + lockoutMs; 
   }, [logEvent]);
 
-  // RESTORED: Golden V2 pure 0.90x Ahead-Glide
   const executeSoftGlide = useCallback((driftSeconds: number) => {
       const rate = 0.90;
       const virtualLossPerSec = 1.0 - rate; 
@@ -273,8 +310,17 @@ export const useSyncEngine = ({
     channel.on('broadcast', { event: 'pong' }, ({ payload }) => {
       if (!isHost && payload.target === userId && !isNtpFrozenRef.current) {
         pingCountRef.current += 1;
-        const rtt = kalmanRtt.current.filter(Date.now() - payload.t); 
-        const offset = payload.ht - payload.t - (rtt / 2);
+        
+        // 🚀 UPGRADE 3: Fast-Convergence Kalman Noise
+        // Inject Q=0.5 for the first 15 pings to rapidly assemble truth. Then tighten to Q=0.01.
+        const dynamicQ = pingCountRef.current < 15 ? 0.5 : 0.01;
+        const rtt = kalmanRtt.current.filter(Date.now() - payload.t, dynamicQ); 
+        
+        // 🚀 UPGRADE 2: Asymmetric NTP Bias
+        // Mobile downloads are fundamentally faster. Applying 0.40 bias strips 20ms of hallucinated drift immediately.
+        const isMobile = deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'Android';
+        const asymmetricBias = isMobile ? 0.40 : 0.50;
+        const offset = payload.ht - payload.t - (rtt * asymmetricBias);
         
         ntpAnalyzer.current.addSample(rtt, offset);
         const metrics = ntpAnalyzer.current.getMetrics();
@@ -287,7 +333,7 @@ export const useSyncEngine = ({
 
         if (pingCountRef.current > 45) {
             isNtpFrozenRef.current = true;
-            logEvent('NTP_FROZEN_LOCKED', { finalOffset: metrics.offset, finalJitter: metrics.jitter });
+            logEvent('NTP_FROZEN_LOCKED', { finalOffset: metrics.offset, finalJitter: metrics.jitter, appliedBias: asymmetricBias });
         }
         
         if (Math.random() < 0.15) { 
@@ -298,7 +344,7 @@ export const useSyncEngine = ({
 
     channel.on('broadcast', { event: 'request_logs' }, () => {
       if (isHost) return;
-      logEvent('UPLOADING_LOGS');
+      logEvent('UPLOADING_LOGS_MANUAL');
       channel.send({ type: 'broadcast', event: 'submit_logs', payload: { uId: userId, os: deviceInfo.current.os, logs: syncLogs.current } });
     });
 
@@ -327,6 +373,8 @@ export const useSyncEngine = ({
          
          const dacOffset = getAudioHardwareOffset(deviceInfo.current.os, deviceInfo.current.browser);
          const expectedTime = payload.startVideoTime + ((Date.now() + clockOffsetRef.current - payload.startNetworkTime) / 1000) - dacOffset;
+         
+         playheadStartTimeRef.current = Date.now(); // Start the 10-second Aggressive Mode timer
          
          if (isColdStartRef.current) {
              const coldPenalty = deviceInfo.current.os === 'iOS' ? 1.800 : 1.200;
@@ -372,19 +420,17 @@ export const useSyncEngine = ({
   }, [roomId, userId, isHost, logEvent, executeHardSeek]);
 
   // ============================================================================
-  // LAYER 2: AUTONOMOUS JOINER EVALUATION LOOP (GOLDEN V2 RESTORED)
+  // LAYER 2: AUTONOMOUS JOINER EVALUATION LOOP
   // ============================================================================
   useEffect(() => {
     if (isHost) return;
 
-    // RESTORED: 200ms Interval for rapid detection
     const interval = setInterval(() => {
       const epoch = epochRef.current;
       if (!epoch.videoId) return;
 
       const playerState = handlers.current.getPlayerState();
       
-      // RESTORED: Silent buffer skipping. No 3-second penalty locks!
       if (playerState === 3 || playerState === -1) return;
 
       if (!epoch.isPlaying) {
@@ -416,10 +462,8 @@ export const useSyncEngine = ({
       setLastSyncDelta(Math.round(absDrift * 1000));
       lastSyncDeltaRef.current = Math.round(absDrift * 1000);
       
-      // RESTORED: Strict 80ms Tolerance Ceiling
       const tolerance = Math.max(0.015, Math.min(0.080, (networkJitterRef.current / 1000) * 1.2));
 
-      // RESTORED: Just Resumed Strike
       const justResumed = !wasPlayingRef.current;
       wasPlayingRef.current = true;
 
@@ -437,18 +481,27 @@ export const useSyncEngine = ({
               setSyncStatus('syncing');
               
               if (drift > 0) {
-                  // 🔴 BEHIND (Restored V2 Logic: NO GLIDING, ONLY SEEKING)
+                  // 🔴 BEHIND
                   const dt = (Date.now() - lastSeekTime.current) / 1000;
                   if (dt > 0 && dt < 15 && !isColdStartRef.current) {
-                      currentWarmPenalty.current += warmPenaltyPID.current.calculate(absDrift, dt);
+                      // 🚀 UPGRADE 1: PID Dynamic Gain Scheduling
+                      // Hyper-aggressive (Ki=0.25) during the first 10 seconds AND while drift is severe (>20ms).
+                      // Drops to conservative (Ki=0.05) once within 20ms to lock it cleanly without bouncing.
+                      const timeSincePlay = Date.now() - playheadStartTimeRef.current;
+                      const isAggressive = (timeSincePlay < 10000) && (absDrift > 0.020);
+                      
+                      currentWarmPenalty.current += warmPenaltyPID.current.calculate(absDrift, dt, isAggressive);
                       currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
+                      
+                      if (isAggressive) logEvent('PID_AGGRESSIVE_SHIFT', { currentPenalty: currentWarmPenalty.current });
                   }
+                  
                   const penalty = isColdStartRef.current ? 1.5 : currentWarmPenalty.current;
                   executeHardSeek(expectedTime + penalty, `Macro-Behind: ${absDrift.toFixed(3)}s`, 2500);
                   lastSeekTime.current = Date.now();
                   isColdStartRef.current = false;
               } else {
-                  // 🟢 AHEAD (Restored V2 Logic: 0.90x Glide or Micro-Pause)
+                  // 🟢 AHEAD
                   if (Date.now() - lastSeekTime.current < 5000 && !isColdStartRef.current) {
                       currentWarmPenalty.current -= (absDrift * 0.4);
                       currentWarmPenalty.current = Math.max(0.100, currentWarmPenalty.current);
