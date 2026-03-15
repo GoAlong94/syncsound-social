@@ -5,32 +5,38 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v6.2-Fast-Convergence";
+export const ENGINE_VERSION = "v6.3-PID-Dampened-Expanded";
 
 // ============================================================================
 // PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING 
 // ============================================================================
 
 class KalmanFilter {
-  private r: number; private q: number; private p: number; 
-  private x: number; private k: number;
+  private r: number; 
+  private q: number; 
+  private p: number; 
+  private x: number; 
+  private k: number;
 
   constructor(measurementNoise = 10, processNoise = 0.1, initialError = 1, initialEstimate = 0) {
-    this.r = measurementNoise; this.q = processNoise; 
-    this.p = initialError; this.x = initialEstimate; this.k = 0;
+    this.r = measurementNoise; 
+    this.q = processNoise; 
+    this.p = initialError; 
+    this.x = initialEstimate; 
+    this.k = 0;
   }
 
-  // 🚀 UPGRADE 3: Fast-Convergence Adaptive Noise Injection
   filter(measurement: number, dynamicQ: number = this.q): number {
-    if (this.x === 0) { this.x = measurement; return measurement; }
+    if (this.x === 0) { 
+        this.x = measurement; 
+        return measurement; 
+    }
     
-    // Inject high process noise early on to build the baseline fast, 
-    // then tighten it to ignore late-stage jitter spikes.
     this.p = this.p + dynamicQ; 
-    
     this.k = this.p / (this.p + this.r); 
     this.x = this.x + this.k * (measurement - this.x); 
     this.p = (1 - this.k) * this.p; 
+    
     return this.x;
   }
 }
@@ -42,11 +48,16 @@ class NTPAnalyzer {
 
   addSample(rtt: number, offset: number) {
     this.history.push({ rtt, offset });
-    if (this.history.length > 30) this.history.shift();
+    if (this.history.length > 30) {
+        this.history.shift();
+    }
   }
 
   getMetrics(): { offset: number, jitter: number, rtt: number } {
-    if (this.history.length === 0) return { offset: 0, jitter: 0, rtt: 0 };
+    if (this.history.length === 0) {
+        return { offset: 0, jitter: 0, rtt: 0 };
+    }
+    
     if (this.history.length < 5) {
        const latest = this.history[this.history.length - 1];
        return { offset: latest.offset, jitter: 50, rtt: latest.rtt };
@@ -55,43 +66,67 @@ class NTPAnalyzer {
     const sorted = [...this.history].sort((a, b) => a.rtt - b.rtt);
     const bestPackets = sorted.slice(Math.floor(sorted.length * 0.1), Math.floor(sorted.length * 0.5));
 
-    let sumOffset = 0, sumRtt = 0;
-    bestPackets.forEach(s => { sumOffset += s.offset; sumRtt += s.rtt; });
+    let sumOffset = 0;
+    let sumRtt = 0;
+    
+    bestPackets.forEach(s => { 
+        sumOffset += s.offset; 
+        sumRtt += s.rtt; 
+    });
+    
     const avgOffset = sumOffset / bestPackets.length;
     const avgRtt = sumRtt / bestPackets.length;
 
     const variance = bestPackets.reduce((acc, val) => acc + Math.pow(val.rtt - avgRtt, 2), 0) / bestPackets.length;
     
-    if (this.emaOffset === null) this.emaOffset = avgOffset;
-    else this.emaOffset = (this.alpha * avgOffset) + ((1 - this.alpha) * this.emaOffset);
+    if (this.emaOffset === null) {
+        this.emaOffset = avgOffset;
+    } else {
+        this.emaOffset = (this.alpha * avgOffset) + ((1 - this.alpha) * this.emaOffset);
+    }
 
-    return { offset: this.emaOffset, jitter: Math.sqrt(variance), rtt: avgRtt };
+    return { 
+        offset: this.emaOffset, 
+        jitter: Math.sqrt(variance), 
+        rtt: avgRtt 
+    };
   }
 }
 
 class PIDController {
-  private kp: number; private ki: number; private kd: number;
-  private integral: number = 0; private prevError: number = 0;
-  private minOut: number; private maxOut: number;
+  private kp: number; 
+  private ki: number; 
+  private kd: number;
+  private integral: number = 0; 
+  private prevError: number = 0;
+  private minOut: number; 
+  private maxOut: number;
   private derivative: number = 0;
 
   constructor(kp: number, ki: number, kd: number, minOut: number, maxOut: number) {
-    this.kp = kp; this.ki = ki; this.kd = kd; 
-    this.minOut = minOut; this.maxOut = maxOut;
+    this.kp = kp; 
+    this.ki = ki; 
+    this.kd = kd; 
+    this.minOut = minOut; 
+    this.maxOut = maxOut;
   }
 
-  // 🚀 UPGRADE 1: Dynamic Gain Scheduling
   calculate(error: number, dt: number, isAggressive: boolean = false): number {
-    if (dt <= 0) return 0;
+    if (dt <= 0) {
+        return 0;
+    }
     
-    // Shift gears to Ki = 0.25 during the aggressive transient phase
-    const activeKi = isAggressive ? 0.25 : this.ki;
+    // 🚀 FIX: Dampened Aggressive Gear (0.15 to prevent Ringing)
+    const activeKi = isAggressive ? 0.15 : this.ki;
     
     const p = this.kp * error;
     this.integral += error * dt;
     
-    if (this.integral * activeKi > this.maxOut) this.integral = this.maxOut / activeKi;
-    else if (this.integral * activeKi < this.minOut) this.integral = this.minOut / activeKi;
+    if (this.integral * activeKi > this.maxOut) {
+        this.integral = this.maxOut / activeKi;
+    } else if (this.integral * activeKi < this.minOut) {
+        this.integral = this.minOut / activeKi;
+    }
 
     const rawD = (error - this.prevError) / dt;
     this.derivative = (0.7 * rawD) + (0.3 * this.derivative); 
@@ -100,7 +135,12 @@ class PIDController {
 
     return Math.max(this.minOut, Math.min(this.maxOut, p + (activeKi * this.integral) + d));
   }
-  reset() { this.integral = 0; this.prevError = 0; this.derivative = 0; }
+  
+  reset() { 
+      this.integral = 0; 
+      this.prevError = 0; 
+      this.derivative = 0; 
+  }
 }
 
 const getAudioHardwareOffset = (os: string, browser: string): number => {
@@ -113,17 +153,25 @@ const getAudioHardwareOffset = (os: string, browser: string): number => {
 };
 
 interface UseSyncEngineProps {
-  roomId: string; isHost: boolean; userId: string;
-  getCurrentTime: () => number; seekTo: (time: number) => void;
-  setPlaybackRate: (rate: number) => void; play: () => void; pause: () => void;
+  roomId: string; 
+  isHost: boolean; 
+  userId: string;
+  getCurrentTime: () => number; 
+  seekTo: (time: number) => void;
+  setPlaybackRate: (rate: number) => void; 
+  play: () => void; 
+  pause: () => void;
   getPlayerState: () => number;
   onVideoChange?: (videoId: string, title: string, thumbnail: string) => void;
   onQueueUpdate?: (queue: QueueState) => void;
 }
 
 interface EpochState {
-  isPlaying: boolean; startNetworkTime: number; startVideoTime: number;
-  videoId: string | null; updateId: number; 
+  isPlaying: boolean; 
+  startNetworkTime: number; 
+  startVideoTime: number;
+  videoId: string | null; 
+  updateId: number; 
 }
 
 // ============================================================================
@@ -131,7 +179,17 @@ interface EpochState {
 // ============================================================================
 
 export const useSyncEngine = ({
-  roomId, isHost, userId, getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate,
+  roomId, 
+  isHost, 
+  userId, 
+  getCurrentTime, 
+  seekTo, 
+  setPlaybackRate, 
+  play, 
+  pause, 
+  getPlayerState, 
+  onVideoChange, 
+  onQueueUpdate,
 }: UseSyncEngineProps) => {
 
   const channelRef = useRef<RealtimeChannel | null>(null);
@@ -144,7 +202,10 @@ export const useSyncEngine = ({
   const lastSyncDeltaRef = useRef<number>(0); 
   
   const handlers = useRef({ getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate });
-  useEffect(() => { handlers.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; });
+  
+  useEffect(() => { 
+      handlers.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; 
+  });
   
   const deviceInfo = useRef(getDeviceInfo());
   const wakeLockRef = useRef<any>(null);
@@ -175,17 +236,22 @@ export const useSyncEngine = ({
   const isNtpFrozenRef = useRef<boolean>(false);
   const cachedVideoIdRef = useRef<string | null>(null);
 
-  // 15,000 Capacity Array (~50 minutes of continuous physics data)
+  // Massive Array Limit (15,000) for continuous data
   const syncLogs = useRef<any[]>([]);
   const collectedLogsRef = useRef<Record<string, any[]>>({});
 
   const logEvent = useCallback((e: string, data: any = {}) => {
     const currentState = handlers.current.getPlayerState();
+    
     syncLogs.current.push({ 
       t: new Date().toISOString(), 
       r: isHost ? 'HOST' : 'JOINER', 
       e, 
-      ctx: { state: currentState, locTime: handlers.current.getCurrentTime(), jitter: networkJitterRef.current }, 
+      ctx: { 
+          state: currentState, 
+          locTime: handlers.current.getCurrentTime(), 
+          jitter: networkJitterRef.current 
+      }, 
       ...data 
     });
     
@@ -202,13 +268,16 @@ export const useSyncEngine = ({
       
       setTimeout(() => {
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
-        const a = document.createElement('a'); a.href = dataStr; a.download = `sync_v6.2_SESSION_${Date.now()}.json`;
-        document.body.appendChild(a); a.click(); a.remove();
+        const a = document.createElement('a'); 
+        a.href = dataStr; 
+        a.download = `sync_v6.3_SESSION_${Date.now()}.json`;
+        document.body.appendChild(a); 
+        a.click(); 
+        a.remove();
       }, 3500);
     }
   }, [isHost, userId, logEvent]);
 
-  // THE DEATH RATTLE: Upload logs if user violently kills the app
   useEffect(() => {
     const handleUnload = () => {
       if (!isHost && channelRef.current) {
@@ -231,33 +300,46 @@ export const useSyncEngine = ({
   }, [isHost, userId, logEvent]);
 
   useEffect(() => {
-    const acquireWakeLock = async () => {
-      if ('wakeLock' in navigator && !wakeLockRef.current) {
-        try { wakeLockRef.current = await (navigator as any).wakeLock.request('screen'); } catch (e) {}
-      }
+    const acquireWakeLock = async () => { 
+        if ('wakeLock' in navigator && !wakeLockRef.current) { 
+            try { 
+                wakeLockRef.current = await (navigator as any).wakeLock.request('screen'); 
+            } catch (e) {} 
+        } 
     };
+    
     acquireWakeLock();
+    
     const handleVis = () => { 
-      if (document.visibilityState === 'visible') {
-         acquireWakeLock();
-         if (!isHost) {
-            logEvent('APP_FOREGROUNDED', {});
-            ignoreSyncUntil.current = 0; 
-            channelRef.current?.send({ type: 'broadcast', event: 'sync_req', payload: { sId: userId } });
-         }
-      }
+        if (document.visibilityState === 'visible') { 
+            acquireWakeLock(); 
+            if (!isHost) { 
+                logEvent('APP_FOREGROUNDED', {}); 
+                ignoreSyncUntil.current = 0; 
+                channelRef.current?.send({ type: 'broadcast', event: 'sync_req', payload: { sId: userId } }); 
+            } 
+        } 
     };
+    
     document.addEventListener('visibilitychange', handleVis);
     return () => document.removeEventListener('visibilitychange', handleVis);
   }, [isHost, logEvent, userId]);
 
   const executeHardSeek = useCallback((time: number, reason: string, lockoutMs = 2500) => {
     logEvent('HARD_SEEK', { target: time, reason });
-    if (catchupTimeout.current) { clearTimeout(catchupTimeout.current); catchupTimeout.current = null; }
+    
+    if (catchupTimeout.current) { 
+        clearTimeout(catchupTimeout.current); 
+        catchupTimeout.current = null; 
+    }
     
     handlers.current.seekTo(time);
-    if (epochRef.current.isPlaying) handlers.current.play();
-    else handlers.current.pause();
+    
+    if (epochRef.current.isPlaying) {
+        handlers.current.play(); 
+    } else {
+        handlers.current.pause();
+    }
     
     ignoreSyncUntil.current = Date.now() + lockoutMs; 
   }, [logEvent]);
@@ -273,17 +355,19 @@ export const useSyncEngine = ({
       softGlideUntil.current = Date.now() + holdTimeMs;
       ignoreSyncUntil.current = Date.now() + holdTimeMs + 200; 
       
-      setTimeout(() => { handlers.current.setPlaybackRate(1.0); }, holdTimeMs);
+      setTimeout(() => { 
+          handlers.current.setPlaybackRate(1.0); 
+      }, holdTimeMs);
   }, [logEvent]);
 
-  const requestSync = useCallback(() => {
-    if (!channelRef.current || isHost) return;
-    channelRef.current.send({ type: 'broadcast', event: 'sync_req', payload: { sId: userId } });
+  const requestSync = useCallback(() => { 
+      if (!channelRef.current || isHost) return; 
+      channelRef.current.send({ type: 'broadcast', event: 'sync_req', payload: { sId: userId } }); 
   }, [isHost, userId]);
-
-  const measureLatency = useCallback(() => {
-    if (!channelRef.current) return;
-    channelRef.current.send({ type: 'broadcast', event: 'ping', payload: { t: Date.now(), sId: userId } });
+  
+  const measureLatency = useCallback(() => { 
+      if (!channelRef.current) return; 
+      channelRef.current.send({ type: 'broadcast', event: 'ping', payload: { t: Date.now(), sId: userId } }); 
   }, [userId]);
 
   // ============================================================================
@@ -296,39 +380,44 @@ export const useSyncEngine = ({
     channel.on('presence', { event: 'sync' }, () => {
       const state = channel.presenceState();
       setConnectedDevices(Object.values(state).flat().map((p: any) => ({
-        id: p.id, isHost: p.isHost, joinedAt: p.joinedAt, ping: p.ping, os: p.os || '?', browser: p.browser || '?', 
-        syncStatus: p.syncStatus || 'unsynced', latency: p.latency || 0, jitter: p.jitter || 0, cachedVideoId: p.cachedVideoId
+        id: p.id, 
+        isHost: p.isHost, 
+        joinedAt: p.joinedAt, 
+        ping: p.ping, 
+        os: p.os || '?', 
+        browser: p.browser || '?', 
+        syncStatus: p.syncStatus || 'unsynced', 
+        latency: p.latency || 0, 
+        jitter: p.jitter || 0, 
+        cachedVideoId: p.cachedVideoId
       })));
     });
 
-    channel.on('broadcast', { event: 'ping' }, ({ payload }) => {
-      if (isHost && payload.sId !== userId) {
-        channel.send({ type: 'broadcast', event: 'pong', payload: { t: payload.t, ht: Date.now(), target: payload.sId } });
-      }
+    channel.on('broadcast', { event: 'ping' }, ({ payload }) => { 
+        if (isHost && payload.sId !== userId) {
+            channel.send({ type: 'broadcast', event: 'pong', payload: { t: payload.t, ht: Date.now(), target: payload.sId } }); 
+        }
     });
 
     channel.on('broadcast', { event: 'pong' }, ({ payload }) => {
       if (!isHost && payload.target === userId && !isNtpFrozenRef.current) {
         pingCountRef.current += 1;
         
-        // 🚀 UPGRADE 3: Fast-Convergence Kalman Noise
-        // Inject Q=0.5 for the first 15 pings to rapidly assemble truth. Then tighten to Q=0.01.
         const dynamicQ = pingCountRef.current < 15 ? 0.5 : 0.01;
         const rtt = kalmanRtt.current.filter(Date.now() - payload.t, dynamicQ); 
         
-        // 🚀 UPGRADE 2: Asymmetric NTP Bias
-        // Mobile downloads are fundamentally faster. Applying 0.40 bias strips 20ms of hallucinated drift immediately.
+        // Gentler asymmetric bias (0.45) to prevent fighting Safari's buffer
         const isMobile = deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'Android';
-        const asymmetricBias = isMobile ? 0.40 : 0.50;
+        const asymmetricBias = isMobile ? 0.45 : 0.50;
         const offset = payload.ht - payload.t - (rtt * asymmetricBias);
         
         ntpAnalyzer.current.addSample(rtt, offset);
         const metrics = ntpAnalyzer.current.getMetrics();
         
-        clockOffsetRef.current = metrics.offset;
+        clockOffsetRef.current = metrics.offset; 
         networkJitterRef.current = metrics.jitter;
         
-        setLatency(Math.round(metrics.rtt));
+        setLatency(Math.round(metrics.rtt)); 
         setNetworkJitter(Math.round(metrics.jitter));
 
         if (pingCountRef.current > 45) {
@@ -337,20 +426,29 @@ export const useSyncEngine = ({
         }
         
         if (Math.random() < 0.15) { 
-           channel.track({ id: userId, isHost, joinedAt: Date.now(), os: deviceInfo.current.os, syncStatus: 'synced', latency: Math.round(metrics.rtt), jitter: Math.round(metrics.jitter), cachedVideoId: cachedVideoIdRef.current });
+            channel.track({ 
+                id: userId, 
+                isHost, 
+                joinedAt: Date.now(), 
+                os: deviceInfo.current.os, 
+                syncStatus: 'synced', 
+                latency: Math.round(metrics.rtt), 
+                jitter: Math.round(metrics.jitter), 
+                cachedVideoId: cachedVideoIdRef.current 
+            }); 
         }
       }
     });
 
-    channel.on('broadcast', { event: 'request_logs' }, () => {
-      if (isHost) return;
-      logEvent('UPLOADING_LOGS_MANUAL');
-      channel.send({ type: 'broadcast', event: 'submit_logs', payload: { uId: userId, os: deviceInfo.current.os, logs: syncLogs.current } });
+    channel.on('broadcast', { event: 'request_logs' }, () => { 
+        if (isHost) return; 
+        logEvent('UPLOADING_LOGS_MANUAL'); 
+        channel.send({ type: 'broadcast', event: 'submit_logs', payload: { uId: userId, os: deviceInfo.current.os, logs: syncLogs.current } }); 
     });
-
-    channel.on('broadcast', { event: 'submit_logs' }, ({ payload }) => {
-      if (!isHost) return;
-      collectedLogsRef.current[`JOINER_${payload.os}_${payload.uId.slice(0,5)}`] = payload.logs;
+    
+    channel.on('broadcast', { event: 'submit_logs' }, ({ payload }) => { 
+        if (!isHost) return; 
+        collectedLogsRef.current[`JOINER_${payload.os}_${payload.uId.slice(0,5)}`] = payload.logs; 
     });
 
     channel.on('broadcast', { event: 'sync' }, ({ payload }: { payload: EpochState }) => {
@@ -361,10 +459,10 @@ export const useSyncEngine = ({
       epochRef.current = payload;
 
       if (payload.videoId && payload.videoId !== currentVideoIdRef.current) {
-        currentVideoIdRef.current = payload.videoId;
-        isColdStartRef.current = true;
-        handlers.current.onVideoChange?.(payload.videoId, "", "");
-        executeHardSeek(0, 'Video Changed', 2500);
+        currentVideoIdRef.current = payload.videoId; 
+        isColdStartRef.current = true; 
+        handlers.current.onVideoChange?.(payload.videoId, "", ""); 
+        executeHardSeek(0, 'Video Changed', 2500); 
         return;
       }
 
@@ -374,19 +472,22 @@ export const useSyncEngine = ({
          const dacOffset = getAudioHardwareOffset(deviceInfo.current.os, deviceInfo.current.browser);
          const expectedTime = payload.startVideoTime + ((Date.now() + clockOffsetRef.current - payload.startNetworkTime) / 1000) - dacOffset;
          
-         playheadStartTimeRef.current = Date.now(); // Start the 10-second Aggressive Mode timer
+         playheadStartTimeRef.current = Date.now(); 
          
          if (isColdStartRef.current) {
              const coldPenalty = deviceInfo.current.os === 'iOS' ? 1.800 : 1.200;
              executeHardSeek(expectedTime + coldPenalty, `Cold Start Resume: +${coldPenalty}s`, 3500);
              isColdStartRef.current = false; 
-         } else {
-             executeHardSeek(expectedTime + currentWarmPenalty.current, `Warm Resume: +${currentWarmPenalty.current.toFixed(3)}s`);
+         } else { 
+             executeHardSeek(expectedTime + currentWarmPenalty.current, `Warm Resume: +${currentWarmPenalty.current.toFixed(3)}s`); 
          }
       }
       
       if (!payload.isPlaying) {
-         if (catchupTimeout.current) { clearTimeout(catchupTimeout.current); catchupTimeout.current = null; }
+         if (catchupTimeout.current) { 
+             clearTimeout(catchupTimeout.current); 
+             catchupTimeout.current = null; 
+         }
          handlers.current.pause();
          if (Math.abs(handlers.current.getCurrentTime() - payload.startVideoTime) > 0.05) {
              handlers.current.seekTo(payload.startVideoTime);
@@ -394,29 +495,46 @@ export const useSyncEngine = ({
       }
     });
 
-    channel.on('broadcast', { event: 'sync_req' }, () => {
-      if (isHost) channel.send({ type: 'broadcast', event: 'sync', payload: epochRef.current });
+    channel.on('broadcast', { event: 'sync_req' }, () => { 
+        if (isHost) {
+            channel.send({ type: 'broadcast', event: 'sync', payload: epochRef.current }); 
+        }
     });
 
     channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
         await channel.track({ 
-            id: userId, isHost, joinedAt: Date.now(), os: deviceInfo.current.os, browser: deviceInfo.current.browser,
-            syncStatus: isHost ? 'synced' : 'unsynced', latency: 0, jitter: 0, cachedVideoId: cachedVideoIdRef.current 
+            id: userId, 
+            isHost, 
+            joinedAt: Date.now(), 
+            os: deviceInfo.current.os, 
+            browser: deviceInfo.current.browser,
+            syncStatus: isHost ? 'synced' : 'unsynced', 
+            latency: 0, 
+            jitter: 0, 
+            cachedVideoId: cachedVideoIdRef.current 
         });
 
         if (!isHost) {
           let pings = 0;
           const interval = setInterval(() => {
-             if (pings++ < 45) channel.send({ type: 'broadcast', event: 'ping', payload: { t: Date.now(), sId: userId } });
-             else { clearInterval(interval); channel.send({ type: 'broadcast', event: 'sync_req', payload: { sId: userId } }); }
+             if (pings++ < 45) {
+                 channel.send({ type: 'broadcast', event: 'ping', payload: { t: Date.now(), sId: userId } });
+             } else { 
+                 clearInterval(interval); 
+                 channel.send({ type: 'broadcast', event: 'sync_req', payload: { sId: userId } }); 
+             }
           }, 150);
         }
       }
     });
 
     channelRef.current = channel;
-    return () => { if (catchupTimeout.current) clearTimeout(catchupTimeout.current); channel.unsubscribe(); };
+    
+    return () => { 
+        if (catchupTimeout.current) clearTimeout(catchupTimeout.current); 
+        channel.unsubscribe(); 
+    };
   }, [roomId, userId, isHost, logEvent, executeHardSeek]);
 
   // ============================================================================
@@ -430,26 +548,37 @@ export const useSyncEngine = ({
       if (!epoch.videoId) return;
 
       const playerState = handlers.current.getPlayerState();
-      
       if (playerState === 3 || playerState === -1) return;
 
       if (!epoch.isPlaying) {
           wasPlayingRef.current = false;
-          if (catchupTimeout.current) { clearTimeout(catchupTimeout.current); catchupTimeout.current = null; }
-          if (playerState === 1) handlers.current.pause();
+          
+          if (catchupTimeout.current) { 
+              clearTimeout(catchupTimeout.current); 
+              catchupTimeout.current = null; 
+          }
+          
+          if (playerState === 1) {
+              handlers.current.pause();
+          }
           
           const localTime = handlers.current.getCurrentTime();
           const drift = Math.abs(localTime - epoch.startVideoTime);
           
-          setLastSyncDelta(Math.round(drift * 1000));
+          setLastSyncDelta(Math.round(drift * 1000)); 
           lastSyncDeltaRef.current = Math.round(drift * 1000);
           
-          if (drift > 0.020) handlers.current.seekTo(epoch.startVideoTime);
-          setSyncStatus('synced');
+          if (drift > 0.020) {
+              handlers.current.seekTo(epoch.startVideoTime);
+          }
+          
+          setSyncStatus('synced'); 
           return;
       }
 
-      if (Date.now() < ignoreSyncUntil.current || Date.now() < softGlideUntil.current) return;
+      if (Date.now() < ignoreSyncUntil.current || Date.now() < softGlideUntil.current) {
+          return;
+      }
 
       const networkTime = Date.now() + clockOffsetRef.current;
       const dacOffset = getAudioHardwareOffset(deviceInfo.current.os, deviceInfo.current.browser);
@@ -483,17 +612,17 @@ export const useSyncEngine = ({
               if (drift > 0) {
                   // 🔴 BEHIND
                   const dt = (Date.now() - lastSeekTime.current) / 1000;
+                  
                   if (dt > 0 && dt < 15 && !isColdStartRef.current) {
-                      // 🚀 UPGRADE 1: PID Dynamic Gain Scheduling
-                      // Hyper-aggressive (Ki=0.25) during the first 10 seconds AND while drift is severe (>20ms).
-                      // Drops to conservative (Ki=0.05) once within 20ms to lock it cleanly without bouncing.
                       const timeSincePlay = Date.now() - playheadStartTimeRef.current;
                       const isAggressive = (timeSincePlay < 10000) && (absDrift > 0.020);
                       
                       currentWarmPenalty.current += warmPenaltyPID.current.calculate(absDrift, dt, isAggressive);
                       currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
                       
-                      if (isAggressive) logEvent('PID_AGGRESSIVE_SHIFT', { currentPenalty: currentWarmPenalty.current });
+                      if (isAggressive) {
+                          logEvent('PID_AGGRESSIVE_SHIFT', { currentPenalty: currentWarmPenalty.current });
+                      }
                   }
                   
                   const penalty = isColdStartRef.current ? 1.5 : currentWarmPenalty.current;
@@ -511,13 +640,24 @@ export const useSyncEngine = ({
                   if (absDrift <= 0.060) {
                       executeSoftGlide(absDrift);
                   } else {
-                      const pauseMs = Math.round(absDrift * 1000) - 5;
-                      if (pauseMs > 10) {
-                          logEvent('MICRO_PAUSE', { pauseMs });
-                          if (catchupTimeout.current) clearTimeout(catchupTimeout.current);
+                      // 🚀 FIX: The 150ms Shock Absorber Cap
+                      const rawPauseMs = Math.round(absDrift * 1000) - 5;
+                      const cappedPauseMs = Math.min(rawPauseMs, 150); 
+                      
+                      if (cappedPauseMs > 10) {
+                          logEvent('MICRO_PAUSE_CAPPED', { rawPauseMs, cappedPauseMs });
+                          
+                          if (catchupTimeout.current) {
+                              clearTimeout(catchupTimeout.current);
+                          }
+                          
                           handlers.current.pause();
-                          ignoreSyncUntil.current = Date.now() + pauseMs + 400;
-                          catchupTimeout.current = setTimeout(() => { handlers.current.play(); catchupTimeout.current = null; }, pauseMs);
+                          ignoreSyncUntil.current = Date.now() + cappedPauseMs + 400;
+                          
+                          catchupTimeout.current = setTimeout(() => { 
+                              handlers.current.play(); 
+                              catchupTimeout.current = null; 
+                          }, cappedPauseMs);
                       }
                   }
               }
@@ -530,6 +670,7 @@ export const useSyncEngine = ({
       }
 
     }, 200); 
+    
     return () => clearInterval(interval);
   }, [isHost, logEvent, executeHardSeek, executeSoftGlide]);
 
@@ -564,9 +705,13 @@ export const useSyncEngine = ({
       if (stateChanged || now - lastHostBroadcastTime.current > 2500) {
         channelRef.current?.send({ type: 'broadcast', event: 'sync', payload: epochRef.current });
         lastHostBroadcastTime.current = now;
-        if (stateChanged) logEvent('HOST_EPOCH_UPDATE', epochRef.current);
+        
+        if (stateChanged) {
+            logEvent('HOST_EPOCH_UPDATE', epochRef.current);
+        }
       }
     }, 100); 
+    
     return () => clearInterval(interval);
   }, [isHost, logEvent]);
 
@@ -599,18 +744,36 @@ export const useSyncEngine = ({
 
   const manualResyncFunc = useCallback(() => {
     if (isHost) return;
+    
     setSyncStatus('syncing');
     ntpAnalyzer.current = new NTPAnalyzer();
     kalmanRtt.current = new KalmanFilter(15, 0.5, 1, 0);
     isNtpFrozenRef.current = false;
     pingCountRef.current = 0;
+    
     requestSync();
-    for(let i=0; i<5; i++) setTimeout(measureLatency, i*100);
+    for(let i=0; i<5; i++) {
+        setTimeout(measureLatency, i*100);
+    }
   }, [isHost, requestSync, measureLatency]);
 
   return {
-    connectedDevices, latency, syncStatus, lastSyncDelta, networkJitter, broadcastPlay, broadcastPause, broadcastVideoChange, broadcastQueueUpdate: () => {}, forceResync, manualResync: manualResyncFunc, measureLatency, downloadLogs, engineVersion: ENGINE_VERSION,
-    deviceInfo: deviceInfo.current, setCurrentVideoId: (id: string) => { currentVideoIdRef.current = id; },
+    connectedDevices, 
+    latency, 
+    syncStatus, 
+    lastSyncDelta, 
+    networkJitter, 
+    broadcastPlay, 
+    broadcastPause, 
+    broadcastVideoChange, 
+    broadcastQueueUpdate: () => {}, 
+    forceResync, 
+    manualResync: manualResyncFunc, 
+    measureLatency, 
+    downloadLogs, 
+    engineVersion: ENGINE_VERSION,
+    deviceInfo: deviceInfo.current, 
+    setCurrentVideoId: (id: string) => { currentVideoIdRef.current = id; },
     reportPreloadReady: (vid: string) => { 
         cachedVideoIdRef.current = vid; 
         if (!isHost) channelRef.current?.track({ id: userId, isHost: false, cachedVideoId: vid }); 
