@@ -5,7 +5,7 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v6.3-PID-Dampened-Expanded";
+export const ENGINE_VERSION = "v6.4-Truth-Restored";
 
 // ============================================================================
 // PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING 
@@ -116,7 +116,6 @@ class PIDController {
         return 0;
     }
     
-    // 🚀 FIX: Dampened Aggressive Gear (0.15 to prevent Ringing)
     const activeKi = isAggressive ? 0.15 : this.ki;
     
     const p = this.kp * error;
@@ -236,7 +235,6 @@ export const useSyncEngine = ({
   const isNtpFrozenRef = useRef<boolean>(false);
   const cachedVideoIdRef = useRef<string | null>(null);
 
-  // Massive Array Limit (15,000) for continuous data
   const syncLogs = useRef<any[]>([]);
   const collectedLogsRef = useRef<Record<string, any[]>>({});
 
@@ -270,7 +268,7 @@ export const useSyncEngine = ({
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a'); 
         a.href = dataStr; 
-        a.download = `sync_v6.3_SESSION_${Date.now()}.json`;
+        a.download = `sync_v6.4_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); 
         a.click(); 
         a.remove();
@@ -406,10 +404,9 @@ export const useSyncEngine = ({
         const dynamicQ = pingCountRef.current < 15 ? 0.5 : 0.01;
         const rtt = kalmanRtt.current.filter(Date.now() - payload.t, dynamicQ); 
         
-        // Gentler asymmetric bias (0.45) to prevent fighting Safari's buffer
-        const isMobile = deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'Android';
-        const asymmetricBias = isMobile ? 0.45 : 0.50;
-        const offset = payload.ht - payload.t - (rtt * asymmetricBias);
+        // 🚀 FIX: The Absolute Truth Restored. 
+        // No more asymmetric bias hallucinations. Exact (rtt / 2) symmetrical split.
+        const offset = payload.ht - payload.t - (rtt / 2);
         
         ntpAnalyzer.current.addSample(rtt, offset);
         const metrics = ntpAnalyzer.current.getMetrics();
@@ -422,7 +419,7 @@ export const useSyncEngine = ({
 
         if (pingCountRef.current > 45) {
             isNtpFrozenRef.current = true;
-            logEvent('NTP_FROZEN_LOCKED', { finalOffset: metrics.offset, finalJitter: metrics.jitter, appliedBias: asymmetricBias });
+            logEvent('NTP_FROZEN_LOCKED', { finalOffset: metrics.offset, finalJitter: metrics.jitter });
         }
         
         if (Math.random() < 0.15) { 
@@ -640,7 +637,6 @@ export const useSyncEngine = ({
                   if (absDrift <= 0.060) {
                       executeSoftGlide(absDrift);
                   } else {
-                      // 🚀 FIX: The 150ms Shock Absorber Cap
                       const rawPauseMs = Math.round(absDrift * 1000) - 5;
                       const cappedPauseMs = Math.min(rawPauseMs, 150); 
                       
