@@ -5,7 +5,7 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v9.0-Dual-Glide";
+export const ENGINE_VERSION = "v9.1-Ultimate-Stability";
 
 // ============================================================================
 // PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING
@@ -263,7 +263,7 @@ export const useSyncEngine = ({
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a'); 
         a.href = dataStr; 
-        a.download = `sync_v9.0_SESSION_${Date.now()}.json`;
+        a.download = `sync_v9.1_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); 
         a.click(); 
         a.remove();
@@ -401,7 +401,6 @@ export const useSyncEngine = ({
         
         const dynamicQ = pingCountRef.current < 15 ? 0.5 : 0.01;
         const rtt = kalmanRtt.current.filter(Date.now() - payload.t, dynamicQ); 
-        
         const offset = payload.ht - payload.t - (rtt / 2);
         
         ntpAnalyzer.current.addSample(rtt, offset);
@@ -468,13 +467,10 @@ export const useSyncEngine = ({
          
          playheadStartTimeRef.current = Date.now(); 
          
-         if (isColdStartRef.current) {
-             const coldPenalty = deviceInfo.current.os === 'iOS' ? 1.800 : 1.200;
-             executeHardSeek(expectedTime + coldPenalty, `Cold Start Resume: +${coldPenalty}s`, 3500);
-             isColdStartRef.current = false; 
-         } else { 
-             executeHardSeek(expectedTime + currentWarmPenalty.current, `Warm Resume: +${currentWarmPenalty.current.toFixed(3)}s`); 
-         }
+         // 🚀 V9.1 FIX: Annihilation of the >500ms "Cold Guess" Spikes
+         // We seek directly to the truth and let the PID loop cleanly calculate the hardware buffer time.
+         executeHardSeek(expectedTime + currentWarmPenalty.current, `Absolute Resume: +${currentWarmPenalty.current.toFixed(3)}s`, 2500); 
+         isColdStartRef.current = false; 
       }
       
       if (!payload.isPlaying) {
@@ -642,8 +638,7 @@ export const useSyncEngine = ({
                       currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
                   }
 
-                  // 🚀 FIX: The 13ms Hard Seek Bomb is Banned
-                  // Any Behind-drift under 200ms uses a clean 1.25x soft glide.
+                  // 🚀 V9.1 FIX: Behind-drift under 200ms uses a clean 1.25x soft glide. No sledgehammers.
                   if (absDrift < 0.200) {
                       executeSoftGlide(absDrift, 'behind');
                   } else {
@@ -660,7 +655,7 @@ export const useSyncEngine = ({
                   
                   lastSeekTime.current = 0;
 
-                  // 🚀 FIX: Ahead-drift uses a 0.75x soft glide, OR Micro-Pause for larger drifts.
+                  // 🚀 V9.1 FIX: Ahead-drift under 80ms uses a 0.75x soft glide.
                   if (absDrift > 0.010 && absDrift <= 0.080) {
                       executeSoftGlide(absDrift, 'ahead');
                   } else {
