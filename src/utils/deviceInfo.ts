@@ -1,10 +1,10 @@
 export const getDeviceInfo = () => {
-  // Safety Check: Prevents crashes during Server-Side Rendering or strict environments
+  // Safety Check: Prevents fatal crashes during compilation or strict rendering environments
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
     return { os: 'Unknown', browser: 'Unknown', userAgent: 'Unknown' };
   }
 
-  const ua = navigator.userAgent;
+  const ua = navigator.userAgent || '';
   let browser = 'Unknown';
   let os = 'Unknown';
 
