@@ -5,16 +5,12 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v7.1-Absolute-Precision";
+export const ENGINE_VERSION = "v7.2-Truth-Unshackled";
 
 // ============================================================================
 // PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING
 // ============================================================================
 
-/**
- * 1D Kalman Filter for Network RTT
- * Isolates true latency from 4G/5G cellular network spikes.
- */
 class KalmanFilter {
   private r: number; 
   private q: number; 
@@ -31,16 +27,12 @@ class KalmanFilter {
   }
 
   filter(measurement: number, dynamicQ: number = this.q): number {
-    // Initialization step
     if (this.x === 0) { 
         this.x = measurement; 
         return measurement; 
     }
     
-    // Prediction Update
     this.p = this.p + dynamicQ; 
-    
-    // Measurement Update (Kalman Gain)
     this.k = this.p / (this.p + this.r); 
     this.x = this.x + this.k * (measurement - this.x); 
     this.p = (1 - this.k) * this.p; 
@@ -49,10 +41,6 @@ class KalmanFilter {
   }
 }
 
-/**
- * Network Time Protocol (NTP) Interquartile Analyzer
- * Cleans asymmetric routing delays to establish a perfectly synchronized UTC epoch.
- */
 class NTPAnalyzer {
   private history: { rtt: number, offset: number }[] = [];
   private emaOffset: number | null = null;
@@ -76,25 +64,22 @@ class NTPAnalyzer {
        return { offset: latest.offset, jitter: 50, rtt: latest.rtt };
     }
 
-    // Interquartile Range: Isolate the fastest, most direct packets
     const sorted = [...this.history].sort((a, b) => a.rtt - b.rtt);
     const bestPackets = sorted.slice(Math.floor(sorted.length * 0.1), Math.floor(sorted.length * 0.5));
 
     let sumOffset = 0;
     let sumRtt = 0;
     
-    bestPackets.forEach(sample => { 
-        sumOffset += sample.offset; 
-        sumRtt += sample.rtt; 
+    bestPackets.forEach(s => { 
+        sumOffset += s.offset; 
+        sumRtt += s.rtt; 
     });
     
     const avgOffset = sumOffset / bestPackets.length;
     const avgRtt = sumRtt / bestPackets.length;
 
-    // Calculate Network Variance (Jitter)
     const variance = bestPackets.reduce((acc, val) => acc + Math.pow(val.rtt - avgRtt, 2), 0) / bestPackets.length;
     
-    // Apply Exponential Moving Average (EMA)
     if (this.emaOffset === null) {
         this.emaOffset = avgOffset;
     } else {
@@ -109,10 +94,6 @@ class NTPAnalyzer {
   }
 }
 
-/**
- * Proportional-Integral-Derivative (PID) Controller
- * Learns the exact microsecond delay of an individual device's audio hardware.
- */
 class PIDController {
   private kp: number; 
   private ki: number; 
@@ -136,20 +117,17 @@ class PIDController {
         return 0;
     }
     
-    // Dampened Aggressive Gear (0.15) to prevent Ringing
     const activeKi = isAggressive ? 0.15 : this.ki;
     
     const p = this.kp * error;
     this.integral += error * dt;
     
-    // Anti-Windup Protocol
     if (this.integral * activeKi > this.maxOut) {
         this.integral = this.maxOut / activeKi;
     } else if (this.integral * activeKi < this.minOut) {
         this.integral = this.minOut / activeKi;
     }
 
-    // Low-Pass Filter on Derivative
     const rawD = (error - this.prevError) / dt;
     this.derivative = (0.7 * rawD) + (0.3 * this.derivative); 
     const d = this.kd * this.derivative;
@@ -165,13 +143,7 @@ class PIDController {
   }
 }
 
-// ============================================================================
-// PART 2: DEVICE HEURISTICS & TYPES
-// ============================================================================
-
 const getAudioHardwareOffset = (os: string, browser: string): number => {
-  // Deep Hardware Check: iPads disguise themselves as MacBooks on modern iOS.
-  // We check for touch points to strip the disguise and apply true iOS latency.
   const isIPad = navigator.maxTouchPoints > 1 && navigator.userAgent.includes("Mac");
   
   if (os === 'iOS' || isIPad) return 0.055; 
@@ -205,7 +177,7 @@ interface EpochState {
 }
 
 // ============================================================================
-// PART 3: THE DECOUPLED SYNC ENGINE
+// PART 2: THE DECOUPLED SYNC ENGINE
 // ============================================================================
 
 export const useSyncEngine = ({
@@ -231,7 +203,6 @@ export const useSyncEngine = ({
   const [lastSyncDelta, setLastSyncDelta] = useState<number>(0);
   const lastSyncDeltaRef = useRef<number>(0); 
   
-  // React-safe refs for closures
   const handlers = useRef({ getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate });
   useEffect(() => { 
       handlers.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; 
@@ -240,24 +211,20 @@ export const useSyncEngine = ({
   const deviceInfo = useRef(getDeviceInfo());
   const wakeLockRef = useRef<any>(null);
 
-  // Decoupled Network Refs (NEVER put in a dependency array)
   const ntpAnalyzer = useRef(new NTPAnalyzer());
   const kalmanRtt = useRef(new KalmanFilter(15, 0.5, 1, 0));
   const clockOffsetRef = useRef<number>(0); 
   const networkJitterRef = useRef<number>(0);
   const currentVideoIdRef = useRef<string | null>(null);
   
-  // The Atomic Source of Truth
   const epochRef = useRef<EpochState>({ isPlaying: false, startNetworkTime: 0, startVideoTime: 0, videoId: null, updateId: 0 });
 
-  // AI & State Trackers
   const isColdStartRef = useRef<boolean>(true);
   const playheadStartTimeRef = useRef<number>(0); 
   
   const warmPenaltyPID = useRef(new PIDController(0.6, 0.05, 0.1, -0.200, 1.000)); 
   const currentWarmPenalty = useRef<number>(deviceInfo.current.os === 'iOS' || getAudioHardwareOffset(deviceInfo.current.os, deviceInfo.current.browser) === 0.055 ? 0.350 : 0.150);
   
-  // Execution Locks
   const ignoreSyncUntil = useRef<number>(0);
   const softGlideUntil = useRef<number>(0);
   const postBufferGracePeriodUntil = useRef<number>(0); 
@@ -267,14 +234,13 @@ export const useSyncEngine = ({
   const wasPlayingRef = useRef<boolean>(false);
   const catchupTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  // V4 Network Survival State
   const pingCountRef = useRef<number>(0);
   const isNtpFrozenRef = useRef<boolean>(false);
   const cachedVideoIdRef = useRef<string | null>(null);
 
   // Hardware Timer Refs
   const requestRef = useRef<number>();
-  const lastEvalTime = useRef<number>(0);
+  const lastUiUpdateTime = useRef<number>(0);
 
   // Massive Array Limit (15,000) for continuous data
   const syncLogs = useRef<any[]>([]);
@@ -306,12 +272,11 @@ export const useSyncEngine = ({
       logEvent('BROADCAST_LOG_REQUEST', {});
       channelRef.current.send({ type: 'broadcast', event: 'request_logs', payload: {} });
       
-      // Wait 3.5s for the massive 15k arrays to upload
       setTimeout(() => {
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a'); 
         a.href = dataStr; 
-        a.download = `sync_v7.1_SESSION_${Date.now()}.json`;
+        a.download = `sync_v7.2_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); 
         a.click(); 
         a.remove();
@@ -319,7 +284,6 @@ export const useSyncEngine = ({
     }
   }, [isHost, userId, logEvent]);
 
-  // THE DEATH RATTLE: Upload logs if user violently kills the app
   useEffect(() => {
     const handleUnload = () => {
       if (!isHost && channelRef.current) {
@@ -341,9 +305,6 @@ export const useSyncEngine = ({
     };
   }, [isHost, userId, logEvent]);
 
-  // ============================================================================
-  // SYSTEM & BACKGROUND MANAGEMENT
-  // ============================================================================
   useEffect(() => {
     const acquireWakeLock = async () => { 
         if ('wakeLock' in navigator && !wakeLockRef.current) { 
@@ -370,9 +331,6 @@ export const useSyncEngine = ({
     return () => document.removeEventListener('visibilitychange', handleVis);
   }, [isHost, logEvent, userId]);
 
-  // ============================================================================
-  // MEDIA MANIPULATORS
-  // ============================================================================
   const executeHardSeek = useCallback((time: number, reason: string, lockoutMs = 2500) => {
     logEvent('HARD_SEEK', { target: time, reason });
     
@@ -451,11 +409,10 @@ export const useSyncEngine = ({
       if (!isHost && payload.target === userId && !isNtpFrozenRef.current) {
         pingCountRef.current += 1;
         
-        // Fast-Convergence Kalman Noise
         const dynamicQ = pingCountRef.current < 15 ? 0.5 : 0.01;
         const rtt = kalmanRtt.current.filter(Date.now() - payload.t, dynamicQ); 
         
-        // ABSOLUTE TRUTH: Exact (rtt / 2) symmetrical split. No hallucinatory biases.
+        // Exact symmetrical calculation. No hallucinatory biases.
         const offset = payload.ht - payload.t - (rtt / 2);
         
         ntpAnalyzer.current.addSample(rtt, offset);
@@ -592,141 +549,152 @@ export const useSyncEngine = ({
   // LAYER 2: AUTONOMOUS HARDWARE-BOUND LOOP (requestAnimationFrame)
   // ============================================================================
   const runHardwareEvaluationLoop = useCallback((timestamp: number) => {
-      // Throttle evaluations to roughly ~200ms, but synchronized with hardware paints
-      if (timestamp - lastEvalTime.current >= 200) {
-          lastEvalTime.current = timestamp;
+      
+      if (isHost) {
+          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          return;
+      }
 
-          if (isHost) return;
+      const epoch = epochRef.current;
+      if (!epoch.videoId) {
+          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          return;
+      }
 
-          const epoch = epochRef.current;
-          if (!epoch.videoId) return;
+      // 1. CALCULATE THE ABSOLUTE TRUTH EVERY SINGLE FRAME
+      const networkTime = Date.now() + clockOffsetRef.current;
+      const dacOffset = getAudioHardwareOffset(deviceInfo.current.os, deviceInfo.current.browser);
+      const expectedTime = epoch.startVideoTime + ((networkTime - epoch.startNetworkTime) / 1000) - dacOffset;
+      const localTime = handlers.current.getCurrentTime();
+      
+      const drift = expectedTime - localTime;
+      const absDrift = Math.abs(drift);
+      
+      // Update Internal Logic Reference at 60fps
+      lastSyncDeltaRef.current = Math.round(absDrift * 1000);
 
-          const playerState = handlers.current.getPlayerState();
+      // 2. THROTTLE REACT UI UPDATES (Prevent UI Freezing & CPU Death Spiral)
+      // Updates the green badge UI only once every 300ms, using the live absolute truth.
+      if (timestamp - lastUiUpdateTime.current >= 300) {
+          setLastSyncDelta(lastSyncDeltaRef.current);
+          lastUiUpdateTime.current = timestamp;
+      }
+
+      const playerState = handlers.current.getPlayerState();
+      
+      if (playerState === 3 || playerState === -1) {
+          postBufferGracePeriodUntil.current = Date.now() + 500;
+          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          return;
+      }
+
+      if (!epoch.isPlaying) {
+          wasPlayingRef.current = false;
           
-          // State 3 Recovery Smoothing: 500ms blackout post-buffering to avoid YouTube API garbage frames
-          if (playerState === 3 || playerState === -1) {
-              postBufferGracePeriodUntil.current = Date.now() + 500;
-              return;
+          if (catchupTimeout.current) { 
+              clearTimeout(catchupTimeout.current); 
+              catchupTimeout.current = null; 
           }
-
-          if (!epoch.isPlaying) {
-              wasPlayingRef.current = false;
-              
-              if (catchupTimeout.current) { 
-                  clearTimeout(catchupTimeout.current); 
-                  catchupTimeout.current = null; 
-              }
-              
-              if (playerState === 1) { 
-                  handlers.current.pause(); 
-              }
-              
-              const localTime = handlers.current.getCurrentTime();
-              const drift = Math.abs(localTime - epoch.startVideoTime);
-              
-              setLastSyncDelta(Math.round(drift * 1000)); 
-              lastSyncDeltaRef.current = Math.round(drift * 1000);
-              
-              if (drift > 0.020) { 
-                  handlers.current.seekTo(epoch.startVideoTime); 
-              }
-              
-              setSyncStatus('synced'); 
-              return;
-          }
-
-          if (Date.now() < ignoreSyncUntil.current || Date.now() < softGlideUntil.current || Date.now() < postBufferGracePeriodUntil.current) {
-              return;
-          }
-
-          const networkTime = Date.now() + clockOffsetRef.current;
-          const dacOffset = getAudioHardwareOffset(deviceInfo.current.os, deviceInfo.current.browser);
-          const expectedTime = epoch.startVideoTime + ((networkTime - epoch.startNetworkTime) / 1000) - dacOffset;
-          const localTime = handlers.current.getCurrentTime();
           
-          const drift = expectedTime - localTime;
-          const absDrift = Math.abs(drift);
-          
-          setLastSyncDelta(Math.round(absDrift * 1000));
-          lastSyncDeltaRef.current = Math.round(absDrift * 1000);
-          
-          // STRICT 10ms LAW: Absolute perfection standard. No dynamic compromises.
-          const tolerance = 0.010;
-
-          const justResumed = !wasPlayingRef.current;
-          wasPlayingRef.current = true;
-
-          if (justResumed && absDrift > tolerance) {
-              const penalty = isColdStartRef.current ? (deviceInfo.current.os === 'iOS' ? 1.8 : 1.2) : currentWarmPenalty.current;
-              executeHardSeek(expectedTime + penalty, `Resume Strike. Pen: ${penalty.toFixed(3)}s`, 3500);
-              if (isColdStartRef.current) isColdStartRef.current = false;
-              return;
+          if (playerState === 1) { 
+              handlers.current.pause(); 
           }
+          
+          if (Math.abs(localTime - epoch.startVideoTime) > 0.020) { 
+              handlers.current.seekTo(epoch.startVideoTime); 
+          }
+          
+          setSyncStatus('synced'); 
+          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          return;
+      }
 
-          if (absDrift > tolerance) {
-              consecutiveMisses.current += 1;
+      // 3. ENGINE LOCKOUT CHECK
+      // If the engine is currently executing a fix, it STOPS calculating new fixes.
+      // (But the UI update logic above still runs, so it never lies to the user).
+      if (Date.now() < ignoreSyncUntil.current || Date.now() < softGlideUntil.current || Date.now() < postBufferGracePeriodUntil.current) {
+          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          return;
+      }
+
+      // STRICT 10ms LAW: Absolute perfection standard. No dynamic compromises.
+      const tolerance = 0.010;
+
+      const justResumed = !wasPlayingRef.current;
+      wasPlayingRef.current = true;
+
+      if (justResumed && absDrift > tolerance) {
+          const penalty = isColdStartRef.current ? (deviceInfo.current.os === 'iOS' ? 1.8 : 1.2) : currentWarmPenalty.current;
+          executeHardSeek(expectedTime + penalty, `Resume Strike. Pen: ${penalty.toFixed(3)}s`, 3500);
+          if (isColdStartRef.current) isColdStartRef.current = false;
+          
+          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          return;
+      }
+
+      if (absDrift > tolerance) {
+          consecutiveMisses.current += 1;
+          
+          if (consecutiveMisses.current >= 2) {
+              setSyncStatus('syncing');
               
-              if (consecutiveMisses.current >= 2) {
-                  setSyncStatus('syncing');
+              if (drift > 0) {
+                  // 🔴 BEHIND
+                  const dt = (Date.now() - lastSeekTime.current) / 1000;
                   
-                  if (drift > 0) {
-                      // 🔴 BEHIND
-                      const dt = (Date.now() - lastSeekTime.current) / 1000;
+                  if (dt > 0 && dt < 15 && !isColdStartRef.current) {
+                      const timeSincePlay = Date.now() - playheadStartTimeRef.current;
+                      const isAggressive = (timeSincePlay < 10000) && (absDrift > 0.020);
                       
-                      if (dt > 0 && dt < 15 && !isColdStartRef.current) {
-                          const timeSincePlay = Date.now() - playheadStartTimeRef.current;
-                          // Engage Aggressive Gear (Ki=0.15) during first 10 seconds to rapidly consume drift
-                          const isAggressive = (timeSincePlay < 10000) && (absDrift > 0.020);
-                          
-                          currentWarmPenalty.current += warmPenaltyPID.current.calculate(absDrift, dt, isAggressive);
-                          currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
-                      }
-                      
-                      const penalty = isColdStartRef.current ? 1.5 : currentWarmPenalty.current;
-                      executeHardSeek(expectedTime + penalty, `Macro-Behind: ${absDrift.toFixed(3)}s`, 2500);
-                      
-                      lastSeekTime.current = Date.now();
-                      isColdStartRef.current = false;
-                  } else {
-                      // 🟢 AHEAD
-                      if (Date.now() - lastSeekTime.current < 5000 && !isColdStartRef.current) {
-                          currentWarmPenalty.current -= (absDrift * 0.4);
-                          currentWarmPenalty.current = Math.max(0.100, currentWarmPenalty.current);
-                      }
-                      
-                      lastSeekTime.current = 0;
+                      currentWarmPenalty.current += warmPenaltyPID.current.calculate(absDrift, dt, isAggressive);
+                      currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
+                  }
+                  
+                  const penalty = isColdStartRef.current ? 1.5 : currentWarmPenalty.current;
+                  executeHardSeek(expectedTime + penalty, `Macro-Behind: ${absDrift.toFixed(3)}s`, 2500);
+                  
+                  lastSeekTime.current = Date.now();
+                  isColdStartRef.current = false;
+              } else {
+                  // 🟢 AHEAD
+                  if (Date.now() - lastSeekTime.current < 5000 && !isColdStartRef.current) {
+                      currentWarmPenalty.current -= (absDrift * 0.4);
+                      currentWarmPenalty.current = Math.max(0.100, currentWarmPenalty.current);
+                  }
+                  
+                  lastSeekTime.current = 0;
 
-                      // Use Micro-pause for anything under 60ms to prevent glide warping
-                      if (absDrift > 0.010 && absDrift <= 0.060) {
-                          executeSoftGlide(absDrift);
-                      } else {
-                          const rawPauseMs = Math.round(absDrift * 1000) - 5;
-                          // 150ms Shock Absorber to prevent violent ringing
-                          const cappedPauseMs = Math.min(rawPauseMs, 150); 
+                  if (absDrift > 0.010 && absDrift <= 0.060) {
+                      executeSoftGlide(absDrift);
+                  } else {
+                      const rawPauseMs = Math.round(absDrift * 1000) - 5;
+                      const cappedPauseMs = Math.min(rawPauseMs, 150); 
+                      
+                      if (cappedPauseMs > 10) {
+                          logEvent('MICRO_PAUSE_CAPPED', { rawPauseMs, cappedPauseMs });
                           
-                          if (cappedPauseMs > 10) {
-                              logEvent('MICRO_PAUSE_CAPPED', { rawPauseMs, cappedPauseMs });
-                              
-                              if (catchupTimeout.current) { 
-                                  clearTimeout(catchupTimeout.current); 
-                              }
-                              
-                              handlers.current.pause();
-                              ignoreSyncUntil.current = Date.now() + cappedPauseMs + 400;
-                              
-                              catchupTimeout.current = setTimeout(() => { 
-                                  handlers.current.play(); 
-                                  catchupTimeout.current = null; 
-                              }, cappedPauseMs);
+                          if (catchupTimeout.current) { 
+                              clearTimeout(catchupTimeout.current); 
                           }
+                          
+                          handlers.current.pause();
+                          ignoreSyncUntil.current = Date.now() + cappedPauseMs + 400;
+                          
+                          catchupTimeout.current = setTimeout(() => { 
+                              handlers.current.play(); 
+                              catchupTimeout.current = null; 
+                          }, cappedPauseMs);
                       }
                   }
               }
-          } else {
-              consecutiveMisses.current = 0;
-              warmPenaltyPID.current.reset();
-              setSyncStatus('synced');
-              if (handlers.current.getPlayerState() !== 1) handlers.current.play();
+          }
+      } else {
+          consecutiveMisses.current = 0;
+          warmPenaltyPID.current.reset();
+          setSyncStatus('synced');
+          
+          if (handlers.current.getPlayerState() !== 1) {
+              handlers.current.play();
           }
       }
       
