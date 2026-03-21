@@ -5,7 +5,7 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v8.1-No-Compromise";
+export const ENGINE_VERSION = "v9.0-Dual-Glide";
 
 // ============================================================================
 // PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING
@@ -48,17 +48,13 @@ class NTPAnalyzer {
 
   addSample(rtt: number, offset: number) {
     this.history.push({ rtt, offset });
-    
     if (this.history.length > 30) {
         this.history.shift();
     }
   }
 
   getMetrics(): { offset: number, jitter: number, rtt: number } {
-    if (this.history.length === 0) {
-        return { offset: 0, jitter: 0, rtt: 0 };
-    }
-    
+    if (this.history.length === 0) return { offset: 0, jitter: 0, rtt: 0 };
     if (this.history.length < 5) {
        const latest = this.history[this.history.length - 1];
        return { offset: latest.offset, jitter: 50, rtt: latest.rtt };
@@ -86,11 +82,7 @@ class NTPAnalyzer {
         this.emaOffset = (this.alpha * avgOffset) + ((1 - this.alpha) * this.emaOffset);
     }
 
-    return { 
-        offset: this.emaOffset, 
-        jitter: Math.sqrt(variance), 
-        rtt: avgRtt 
-    };
+    return { offset: this.emaOffset, jitter: Math.sqrt(variance), rtt: avgRtt };
   }
 }
 
@@ -113,9 +105,7 @@ class PIDController {
   }
 
   calculate(error: number, dt: number, isAggressive: boolean = false): number {
-    if (dt <= 0) {
-        return 0;
-    }
+    if (dt <= 0) return 0;
     
     const activeKi = isAggressive ? 0.15 : this.ki;
     
@@ -144,9 +134,7 @@ class PIDController {
 }
 
 const getAudioHardwareOffset = (os: string, browser: string): number => {
-  const isIPad = navigator.maxTouchPoints > 1 && navigator.userAgent.includes("Mac");
-  
-  if (os === 'iOS' || isIPad) return 0.055; 
+  if (os === 'iOS') return 0.055; 
   if (os === 'macOS' && browser.includes('Safari')) return 0.020;
   if (os === 'macOS' && browser.includes('Chrome')) return 0.035; 
   if (os === 'Android') return 0.090; 
@@ -209,13 +197,6 @@ export const useSyncEngine = ({
   });
   
   const deviceInfo = useRef({ ...getDeviceInfo() });
-  if (deviceInfo.current.os === 'macOS' && typeof window !== 'undefined') {
-      const isIPad = navigator.userAgent.includes("Mac") && ('ontouchend' in document || navigator.maxTouchPoints > 1);
-      if (isIPad) {
-          deviceInfo.current.os = 'iPadOS';
-      }
-  }
-
   const wakeLockRef = useRef<any>(null);
 
   const ntpAnalyzer = useRef(new NTPAnalyzer());
@@ -226,11 +207,11 @@ export const useSyncEngine = ({
   
   const epochRef = useRef<EpochState>({ isPlaying: false, startNetworkTime: 0, startVideoTime: 0, videoId: null, updateId: 0 });
 
+  const isColdStartRef = useRef<boolean>(true);
   const playheadStartTimeRef = useRef<number>(0); 
   
-  // Base logical initialization. The PID Controller will instantly adapt this.
   const warmPenaltyPID = useRef(new PIDController(0.6, 0.05, 0.1, -0.200, 0.800)); 
-  const currentWarmPenalty = useRef<number>(deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'iPadOS' ? 0.350 : 0.150);
+  const currentWarmPenalty = useRef<number>(deviceInfo.current.os === 'iOS' ? 0.350 : 0.150);
   
   const ignoreSyncUntil = useRef<number>(0);
   const softGlideUntil = useRef<number>(0);
@@ -245,7 +226,6 @@ export const useSyncEngine = ({
   const isNtpFrozenRef = useRef<boolean>(false);
   const cachedVideoIdRef = useRef<string | null>(null);
 
-  // Hardware Timer Refs
   const requestRef = useRef<number>();
   const lastUiUpdateTime = useRef<number>(0);
   const lastSeenLocalTime = useRef<number>(-1);
@@ -283,7 +263,7 @@ export const useSyncEngine = ({
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a'); 
         a.href = dataStr; 
-        a.download = `sync_v8.1_SESSION_${Date.now()}.json`;
+        a.download = `sync_v9.0_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); 
         a.click(); 
         a.remove();
@@ -320,7 +300,6 @@ export const useSyncEngine = ({
             } catch (e) {} 
         } 
     };
-    
     acquireWakeLock();
     
     const handleVis = () => { 
@@ -357,12 +336,15 @@ export const useSyncEngine = ({
     ignoreSyncUntil.current = Date.now() + lockoutMs; 
   }, [logEvent]);
 
-  const executeSoftGlide = useCallback((driftSeconds: number) => {
-      const rate = 0.90;
-      const virtualLossPerSec = 1.0 - rate; 
-      const holdTimeMs = Math.min((driftSeconds / virtualLossPerSec) * 1000, 1500); 
+  // 🚀 FIX: The YouTube API Dual-Directional Glide
+  // 0.75x = Drop 0.25s of audio per second.
+  // 1.25x = Gain 0.25s of audio per second.
+  const executeSoftGlide = useCallback((driftSeconds: number, direction: 'ahead' | 'behind') => {
+      const rate = direction === 'ahead' ? 0.75 : 1.25;
+      const virtualDiffPerSec = 0.25; 
+      const holdTimeMs = Math.min((driftSeconds / virtualDiffPerSec) * 1000, 2000); 
       
-      logEvent('SOFT_GLIDE', { driftSeconds, holdTimeMs, rate });
+      logEvent('SOFT_GLIDE_EXEC', { direction, driftSeconds, holdTimeMs, rate });
       handlers.current.setPlaybackRate(rate);
       
       softGlideUntil.current = Date.now() + holdTimeMs;
@@ -370,6 +352,7 @@ export const useSyncEngine = ({
       
       setTimeout(() => { 
           handlers.current.setPlaybackRate(1.0); 
+          logEvent('SOFT_GLIDE_END', { restoredRate: 1.0 });
       }, holdTimeMs);
   }, [logEvent]);
 
@@ -418,6 +401,7 @@ export const useSyncEngine = ({
         
         const dynamicQ = pingCountRef.current < 15 ? 0.5 : 0.01;
         const rtt = kalmanRtt.current.filter(Date.now() - payload.t, dynamicQ); 
+        
         const offset = payload.ht - payload.t - (rtt / 2);
         
         ntpAnalyzer.current.addSample(rtt, offset);
@@ -435,8 +419,6 @@ export const useSyncEngine = ({
         }
         
         if (Math.random() < 0.15) { 
-            // 🚀 FIX: The `?` Browser Bug. 
-            // Explicitly including the browser string in the periodic network ping.
             channel.track({ 
                 id: userId, 
                 isHost, 
@@ -472,6 +454,7 @@ export const useSyncEngine = ({
 
       if (payload.videoId && payload.videoId !== currentVideoIdRef.current) {
         currentVideoIdRef.current = payload.videoId; 
+        isColdStartRef.current = true; 
         handlers.current.onVideoChange?.(payload.videoId, "", ""); 
         executeHardSeek(0, 'Video Changed', 2500); 
         return;
@@ -485,9 +468,13 @@ export const useSyncEngine = ({
          
          playheadStartTimeRef.current = Date.now(); 
          
-         // 🚀 FIX: Annihilation of the >500ms "Cold Guess" Spikes
-         // We no longer guess a 1.8-second jump. We seek exactly to truth and let the PID loop cleanly calculate the hardware buffer time.
-         executeHardSeek(expectedTime + currentWarmPenalty.current, `Absolute Resume: +${currentWarmPenalty.current.toFixed(3)}s`, 2500); 
+         if (isColdStartRef.current) {
+             const coldPenalty = deviceInfo.current.os === 'iOS' ? 1.800 : 1.200;
+             executeHardSeek(expectedTime + coldPenalty, `Cold Start Resume: +${coldPenalty}s`, 3500);
+             isColdStartRef.current = false; 
+         } else { 
+             executeHardSeek(expectedTime + currentWarmPenalty.current, `Warm Resume: +${currentWarmPenalty.current.toFixed(3)}s`); 
+         }
       }
       
       if (!payload.isPlaying) {
@@ -610,9 +597,6 @@ export const useSyncEngine = ({
 
       const localTime = handlers.current.getCurrentTime();
       
-      // 🚀 FIX: The iPad "Tick-Sync" Struggle
-      // Only lock the math out if the video is actively playing but the clock hasn't ticked.
-      // If it is paused or buffering, we MUST let the math run to trigger the play commands!
       if (playerState === 1 && localTime === lastSeenLocalTime.current) {
           requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
           return;
@@ -656,15 +640,17 @@ export const useSyncEngine = ({
                       
                       currentWarmPenalty.current += warmPenaltyPID.current.calculate(absDrift, dt, isAggressive);
                       currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
-                      
-                      if (isAggressive) {
-                          logEvent('PID_AGGRESSIVE_SHIFT', { currentPenalty: currentWarmPenalty.current });
-                      }
+                  }
+
+                  // 🚀 FIX: The 13ms Hard Seek Bomb is Banned
+                  // Any Behind-drift under 200ms uses a clean 1.25x soft glide.
+                  if (absDrift < 0.200) {
+                      executeSoftGlide(absDrift, 'behind');
+                  } else {
+                      executeHardSeek(expectedTime + currentWarmPenalty.current, `Macro-Behind: ${absDrift.toFixed(3)}s`, 2500);
+                      lastSeekTime.current = Date.now();
                   }
                   
-                  executeHardSeek(expectedTime + currentWarmPenalty.current, `Macro-Behind: ${absDrift.toFixed(3)}s`, 2500);
-                  
-                  lastSeekTime.current = Date.now();
               } else {
                   // 🟢 AHEAD
                   if (Date.now() - lastSeekTime.current < 5000) {
@@ -674,8 +660,9 @@ export const useSyncEngine = ({
                   
                   lastSeekTime.current = 0;
 
-                  if (absDrift > 0.010 && absDrift <= 0.060) {
-                      executeSoftGlide(absDrift);
+                  // 🚀 FIX: Ahead-drift uses a 0.75x soft glide, OR Micro-Pause for larger drifts.
+                  if (absDrift > 0.010 && absDrift <= 0.080) {
+                      executeSoftGlide(absDrift, 'ahead');
                   } else {
                       const rawPauseMs = Math.round(absDrift * 1000) - 5;
                       const cappedPauseMs = Math.min(rawPauseMs, 150); 
