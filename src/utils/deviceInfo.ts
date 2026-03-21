@@ -1,5 +1,6 @@
 export const getDeviceInfo = () => {
-  if (typeof window === 'undefined') {
+  // Safety Check: Prevents crashes during Server-Side Rendering or strict environments
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
     return { os: 'Unknown', browser: 'Unknown', userAgent: 'Unknown' };
   }
 
@@ -7,17 +8,17 @@ export const getDeviceInfo = () => {
   let browser = 'Unknown';
   let os = 'Unknown';
 
-  // 1. Precise OS Detection (with iPad Disguise Strip)
-  const isIPad = /Mac/.test(ua) && navigator.maxTouchPoints > 1;
+  // 1. Precise OS Detection (with safe iPad Disguise Strip)
+  const isIPad = /Mac/i.test(ua) && typeof navigator.maxTouchPoints !== 'undefined' && navigator.maxTouchPoints > 1;
 
   if (/windows phone/i.test(ua)) os = 'Windows Phone';
   else if (/win/i.test(ua)) os = 'Windows';
   else if (/android/i.test(ua)) os = 'Android';
-  else if (/iPad|iPhone|iPod/.test(ua) || isIPad) os = 'iOS';
+  else if (/iPad|iPhone|iPod/i.test(ua) || isIPad) os = 'iOS';
   else if (/mac/i.test(ua)) os = 'macOS';
   else if (/linux/i.test(ua)) os = 'Linux';
 
-  // 2. Strict Browser Hierarchy Detection
+  // 2. Strict Browser Hierarchy Detection (Solves the Safari/Chrome bug)
   if (/CriOS/i.test(ua)) browser = 'Chrome (iOS)';
   else if (/FxiOS/i.test(ua)) browser = 'Firefox (iOS)';
   else if (/EdgiOS/i.test(ua)) browser = 'Edge (iOS)';
