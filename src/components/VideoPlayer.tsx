@@ -27,7 +27,7 @@ export const VideoPlayer = ({
   const [activeDeck, setActiveDeck] = useState<Deck>('A');
   const [preloadedVideo, setPreloadedVideo] = useState<string | null>(null);
   
-  // FIX: Host defaults to showing video (false), Joiners default to Data Saver (true).
+  // Host defaults to showing video (dataSaver = false). Joiners default to Data Saver (dataSaver = true).
   const [dataSaver, setDataSaver] = useState<boolean>(!isHost); 
   
   const currentVidA = useRef<string | null>(null);
@@ -110,21 +110,30 @@ export const VideoPlayer = ({
     }
   }, [nextVideoId, activeDeck, deckA.isReady, deckB.isReady]);
 
+  // Determine if the physical iframes should be hidden
+  // We hide them if Data Saver is ON, OR if there is no video loaded yet.
+  const shouldHideIframes = dataSaver || !videoId;
+
   return (
     <div className="flex flex-col gap-3">
       {/* BANDWIDTH ANNIHILATION HACK (1x1 Pixel)
-         If Data Saver is ON, the actual YouTube iframe is squished to 1px.
+         If shouldHideIframes is true, the actual YouTube iframe is squished to 1px off-screen.
+         This prevents the "2 boxes" from bleeding through when the room is empty.
       */}
       <div className={cn(
         "relative bg-black rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/10 group transition-all duration-500",
-        dataSaver ? "w-[1px] h-[1px] opacity-0 absolute top-[-9999px]" : "w-full aspect-video"
+        shouldHideIframes ? "w-[1px] h-[1px] opacity-0 absolute top-[-9999px]" : "w-full aspect-video"
       )}>
-        <div className={cn("absolute inset-0 transition-opacity", activeDeck === 'A' ? "opacity-100 z-10" : "opacity-0 -z-10")}><div id="deck-a" className="w-full h-full" /></div>
-        <div className={cn("absolute inset-0 transition-opacity", activeDeck === 'B' ? "opacity-100 z-10" : "opacity-0 -z-10")}><div id="deck-b" className="w-full h-full" /></div>
+        <div className={cn("absolute inset-0 transition-opacity", activeDeck === 'A' ? "opacity-100 z-10" : "opacity-0 -z-10")}>
+            <div id="deck-a" className="w-full h-full" />
+        </div>
+        <div className={cn("absolute inset-0 transition-opacity", activeDeck === 'B' ? "opacity-100 z-10" : "opacity-0 -z-10")}>
+            <div id="deck-b" className="w-full h-full" />
+        </div>
 
-        {/* Video Info Overlay (Only visible when Data Saver is OFF) */}
+        {/* Video Info Overlay (Only visible when video is physically showing) */}
         <AnimatePresence>
-          {videoTitle && !dataSaver && (
+          {videoTitle && !shouldHideIframes && (
             <motion.div 
               initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }}
               className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black/90 via-black/50 to-transparent pointer-events-none z-20 flex justify-between items-end"
@@ -164,15 +173,19 @@ export const VideoPlayer = ({
         </div>
       )}
 
-      {/* Overlays for Empty State */}
+      {/* OVERLAY FOR EMPTY STATE (No video playing)
+          FIX: Changed from translucent to solid black bg-zinc-950 to hide anything behind it.
+      */}
       {!videoId && (
-        <div className="w-full aspect-video flex flex-col items-center justify-center bg-secondary/30 backdrop-blur-sm rounded-2xl ring-1 ring-white/10">
-          <div className="p-6 rounded-full bg-background/10 mb-4 animate-pulse-glow"><Music className="w-12 h-12 text-primary" /></div>
+        <div className="w-full aspect-video flex flex-col items-center justify-center bg-zinc-950 rounded-2xl border border-white/10 shadow-2xl z-30">
+          <div className="p-6 rounded-full bg-white/5 mb-4 animate-pulse-glow">
+              <Music className="w-12 h-12 text-primary" />
+          </div>
           <p className="text-xl font-semibold text-white">No video playing</p>
         </div>
       )}
       
-      {/* UNIVERSAL TOGGLE CONTROLS */}
+      {/* UNIVERSAL TOGGLE CONTROLS (Host & Joiner) */}
       {videoId && (
         <div className="flex justify-end w-full px-2">
            {dataSaver ? (
