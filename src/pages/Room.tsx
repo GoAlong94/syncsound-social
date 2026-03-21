@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Copy, Check, Crown, Share2, SkipBack, SkipForward, Download } from 'lucide-react';
+import { ArrowLeft, Copy, Check, Crown, Share2, SkipBack, SkipForward, Download, Info, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 
@@ -28,8 +28,11 @@ const Room = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isSynced, setIsSynced] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [hasSeenHost, setHasSeenHost] = useState(false); // Track if we ever successfully found the host
+  const [hasSeenHost, setHasSeenHost] = useState(false);
   
+  // NEW: Spatial Audio Echo Warning
+  const [showEchoWarning, setShowEchoWarning] = useState(true);
+
   const playerControlsRef = useRef<{
     getCurrentTime: () => number;
     seekTo: (time: number) => void;
@@ -152,9 +155,6 @@ const Room = () => {
     }
   };
 
-  // ============================================================================
-  // 2-PHASE ROOM VERIFICATION & HOST KICK LOGIC
-  // ============================================================================
   useEffect(() => {
     if (isHost) return;
 
@@ -164,14 +164,10 @@ const Room = () => {
       if (!hasSeenHost) {
           setHasSeenHost(true);
       }
-      return; // The Host is here, all is well.
+      return; 
     }
 
-    // If we reach here, the Host is missing from the network.
     if (!hasSeenHost) {
-      // PHASE 1: Validating Room Code
-      // We just joined. Wait 8 seconds for the Host's network presence to arrive.
-      // If they don't arrive, the room code is fake, or they already left.
       const validationTimer = setTimeout(() => {
         toast.error("Invalid Room Code or Host not found.");
         navigate('/');
@@ -179,9 +175,6 @@ const Room = () => {
       return () => clearTimeout(validationTimer);
       
     } else {
-      // PHASE 2: Host Disconnection Protection
-      // We successfully saw the Host earlier, but they just vanished.
-      // Give them a 5-second grace period to refresh their page before kicking everyone.
       const disconnectTimer = setTimeout(() => {
         toast.error("The Host has ended the session.");
         navigate('/');
@@ -207,7 +200,6 @@ const Room = () => {
 
         <div className="flex items-center gap-3">
           
-          {/* Get Logs Button is Strictly Hosted-Only */}
           {isHost && (
             <Button
               variant="outline"
@@ -239,9 +231,32 @@ const Room = () => {
 
       <motion.div
         initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-        className="flex justify-center mb-6"
+        className="flex flex-col items-center justify-center gap-4 mb-6"
       >
         <DeviceCounter devices={connectedDevices} latency={latency} />
+        
+        {/* SPATIAL AUDIO ECHO WARNING */}
+        <AnimatePresence>
+          {connectedDevices.length > 1 && showEchoWarning && (
+             <motion.div 
+               initial={{ opacity: 0, height: 0 }}
+               animate={{ opacity: 1, height: 'auto' }}
+               exit={{ opacity: 0, height: 0 }}
+               className="w-full max-w-xl bg-blue-900/30 border border-blue-500/30 rounded-xl p-3 flex items-start justify-between backdrop-blur-md"
+             >
+               <div className="flex gap-3 items-center">
+                 <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+                 <p className="text-xs text-blue-200">
+                   <strong className="text-white block mb-1">Prevent "Placebo Echo"</strong>
+                   Sound waves physically collide if phones touch. Place devices at least <strong>3 to 6 feet (1-2 meters) apart</strong> to allow your brain to process the true spatial audio.
+                 </p>
+               </div>
+               <button onClick={() => setShowEchoWarning(false)} className="text-blue-400 hover:text-white p-1">
+                 <X className="w-4 h-4" />
+               </button>
+             </motion.div>
+          )}
+        </AnimatePresence>
       </motion.div>
 
       <div className="flex-1 flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto w-full">
@@ -307,7 +322,6 @@ const Room = () => {
               <div className="inline-flex items-center gap-3 px-6 py-4 rounded-xl glass">
                 <div className="w-3 h-3 rounded-full bg-primary animate-pulse" />
                 <span className="text-muted-foreground">
-                  {/* Dynamic UI text based on Verification Phase */}
                   {!hasSeenHost ? "Validating room code and finding Host..." : "Waiting for host to select a video..."}
                 </span>
               </div>
