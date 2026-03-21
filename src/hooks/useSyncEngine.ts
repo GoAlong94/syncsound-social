@@ -5,10 +5,10 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v7.2-Truth-Unshackled";
+export const ENGINE_VERSION = "v8.0-Tick-Sync-Precision";
 
 // ============================================================================
-// PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING
+// PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING 
 // ============================================================================
 
 class KalmanFilter {
@@ -122,6 +122,7 @@ class PIDController {
     const p = this.kp * error;
     this.integral += error * dt;
     
+    // Strict Anti-Windup prevents the 1000ms+ penalty accumulation
     if (this.integral * activeKi > this.maxOut) {
         this.integral = this.maxOut / activeKi;
     } else if (this.integral * activeKi < this.minOut) {
@@ -144,9 +145,7 @@ class PIDController {
 }
 
 const getAudioHardwareOffset = (os: string, browser: string): number => {
-  const isIPad = navigator.maxTouchPoints > 1 && navigator.userAgent.includes("Mac");
-  
-  if (os === 'iOS' || isIPad) return 0.055; 
+  if (os === 'iPadOS' || os === 'iOS') return 0.055; 
   if (os === 'macOS' && browser.includes('Safari')) return 0.020;
   if (os === 'macOS' && browser.includes('Chrome')) return 0.035; 
   if (os === 'Android') return 0.090; 
@@ -208,7 +207,15 @@ export const useSyncEngine = ({
       handlers.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; 
   });
   
-  const deviceInfo = useRef(getDeviceInfo());
+  // 🔥 FIX: The Deep Hardware Check for iPadOS
+  const deviceInfo = useRef({ ...getDeviceInfo() });
+  if (deviceInfo.current.os === 'macOS' && typeof window !== 'undefined') {
+      const isIPad = navigator.userAgent.includes("Mac") && ('ontouchend' in document || navigator.maxTouchPoints > 1);
+      if (isIPad) {
+          deviceInfo.current.os = 'iPadOS';
+      }
+  }
+
   const wakeLockRef = useRef<any>(null);
 
   const ntpAnalyzer = useRef(new NTPAnalyzer());
@@ -222,8 +229,8 @@ export const useSyncEngine = ({
   const isColdStartRef = useRef<boolean>(true);
   const playheadStartTimeRef = useRef<number>(0); 
   
-  const warmPenaltyPID = useRef(new PIDController(0.6, 0.05, 0.1, -0.200, 1.000)); 
-  const currentWarmPenalty = useRef<number>(deviceInfo.current.os === 'iOS' || getAudioHardwareOffset(deviceInfo.current.os, deviceInfo.current.browser) === 0.055 ? 0.350 : 0.150);
+  const warmPenaltyPID = useRef(new PIDController(0.6, 0.05, 0.1, -0.200, 0.800)); 
+  const currentWarmPenalty = useRef<number>(deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'iPadOS' ? 0.350 : 0.150);
   
   const ignoreSyncUntil = useRef<number>(0);
   const softGlideUntil = useRef<number>(0);
@@ -238,11 +245,11 @@ export const useSyncEngine = ({
   const isNtpFrozenRef = useRef<boolean>(false);
   const cachedVideoIdRef = useRef<string | null>(null);
 
-  // Hardware Timer Refs
+  // 🔥 NEW: TICK-SYNC EVALUATION REFS
   const requestRef = useRef<number>();
   const lastUiUpdateTime = useRef<number>(0);
+  const lastSeenLocalTime = useRef<number>(-1);
 
-  // Massive Array Limit (15,000) for continuous data
   const syncLogs = useRef<any[]>([]);
   const collectedLogsRef = useRef<Record<string, any[]>>({});
 
@@ -276,7 +283,7 @@ export const useSyncEngine = ({
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a'); 
         a.href = dataStr; 
-        a.download = `sync_v7.2_SESSION_${Date.now()}.json`;
+        a.download = `sync_v8.0_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); 
         a.click(); 
         a.remove();
@@ -412,7 +419,6 @@ export const useSyncEngine = ({
         const dynamicQ = pingCountRef.current < 15 ? 0.5 : 0.01;
         const rtt = kalmanRtt.current.filter(Date.now() - payload.t, dynamicQ); 
         
-        // Exact symmetrical calculation. No hallucinatory biases.
         const offset = payload.ht - payload.t - (rtt / 2);
         
         ntpAnalyzer.current.addSample(rtt, offset);
@@ -479,7 +485,7 @@ export const useSyncEngine = ({
          playheadStartTimeRef.current = Date.now(); 
          
          if (isColdStartRef.current) {
-             const coldPenalty = deviceInfo.current.os === 'iOS' ? 1.800 : 1.200;
+             const coldPenalty = deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'iPadOS' ? 1.800 : 1.200;
              executeHardSeek(expectedTime + coldPenalty, `Cold Start Resume: +${coldPenalty}s`, 3500);
              isColdStartRef.current = false; 
          } else { 
@@ -546,7 +552,7 @@ export const useSyncEngine = ({
   }, [roomId, userId, isHost, logEvent, executeHardSeek]);
 
   // ============================================================================
-  // LAYER 2: AUTONOMOUS HARDWARE-BOUND LOOP (requestAnimationFrame)
+  // LAYER 2: AUTONOMOUS TICK-SYNC EVALUATION LOOP
   // ============================================================================
   const runHardwareEvaluationLoop = useCallback((timestamp: number) => {
       
@@ -561,27 +567,15 @@ export const useSyncEngine = ({
           return;
       }
 
-      // 1. CALCULATE THE ABSOLUTE TRUTH EVERY SINGLE FRAME
-      const networkTime = Date.now() + clockOffsetRef.current;
-      const dacOffset = getAudioHardwareOffset(deviceInfo.current.os, deviceInfo.current.browser);
-      const expectedTime = epoch.startVideoTime + ((networkTime - epoch.startNetworkTime) / 1000) - dacOffset;
-      const localTime = handlers.current.getCurrentTime();
-      
-      const drift = expectedTime - localTime;
-      const absDrift = Math.abs(drift);
-      
-      // Update Internal Logic Reference at 60fps
-      lastSyncDeltaRef.current = Math.round(absDrift * 1000);
-
-      // 2. THROTTLE REACT UI UPDATES (Prevent UI Freezing & CPU Death Spiral)
-      // Updates the green badge UI only once every 300ms, using the live absolute truth.
-      if (timestamp - lastUiUpdateTime.current >= 300) {
+      // UI Decoupling: Paint to the screen every 250ms to prevent React chokehold
+      if (timestamp - lastUiUpdateTime.current >= 250) {
           setLastSyncDelta(lastSyncDeltaRef.current);
           lastUiUpdateTime.current = timestamp;
       }
 
       const playerState = handlers.current.getPlayerState();
       
+      // State 3 Recovery Blackout
       if (playerState === 3 || playerState === -1) {
           postBufferGracePeriodUntil.current = Date.now() + 500;
           requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
@@ -600,7 +594,12 @@ export const useSyncEngine = ({
               handlers.current.pause(); 
           }
           
-          if (Math.abs(localTime - epoch.startVideoTime) > 0.020) { 
+          const localTime = handlers.current.getCurrentTime();
+          const drift = Math.abs(localTime - epoch.startVideoTime);
+          
+          lastSyncDeltaRef.current = Math.round(drift * 1000);
+          
+          if (drift > 0.020) { 
               handlers.current.seekTo(epoch.startVideoTime); 
           }
           
@@ -609,22 +608,39 @@ export const useSyncEngine = ({
           return;
       }
 
-      // 3. ENGINE LOCKOUT CHECK
-      // If the engine is currently executing a fix, it STOPS calculating new fixes.
-      // (But the UI update logic above still runs, so it never lies to the user).
+      // Lockout Check
       if (Date.now() < ignoreSyncUntil.current || Date.now() < softGlideUntil.current || Date.now() < postBufferGracePeriodUntil.current) {
           requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
           return;
       }
 
-      // STRICT 10ms LAW: Absolute perfection standard. No dynamic compromises.
+      // 🔥 FIX: TICK-SYNC EVALUATION
+      // Completely eliminates the 250ms YouTube API "Stale Clock" hallucination.
+      const localTime = handlers.current.getCurrentTime();
+      if (localTime === lastSeenLocalTime.current) {
+          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          return;
+      }
+      
+      // If we reach here, the clock just physically ticked. Measure absolute truth instantly.
+      lastSeenLocalTime.current = localTime;
+
+      const networkTime = Date.now() + clockOffsetRef.current;
+      const dacOffset = getAudioHardwareOffset(deviceInfo.current.os, deviceInfo.current.browser);
+      const expectedTime = epoch.startVideoTime + ((networkTime - epoch.startNetworkTime) / 1000) - dacOffset;
+      
+      const drift = expectedTime - localTime;
+      const absDrift = Math.abs(drift);
+      
+      lastSyncDeltaRef.current = Math.round(absDrift * 1000);
+      
       const tolerance = 0.010;
 
       const justResumed = !wasPlayingRef.current;
       wasPlayingRef.current = true;
 
       if (justResumed && absDrift > tolerance) {
-          const penalty = isColdStartRef.current ? (deviceInfo.current.os === 'iOS' ? 1.8 : 1.2) : currentWarmPenalty.current;
+          const penalty = isColdStartRef.current ? (deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'iPadOS' ? 1.8 : 1.2) : currentWarmPenalty.current;
           executeHardSeek(expectedTime + penalty, `Resume Strike. Pen: ${penalty.toFixed(3)}s`, 3500);
           if (isColdStartRef.current) isColdStartRef.current = false;
           
@@ -647,7 +663,7 @@ export const useSyncEngine = ({
                       const isAggressive = (timeSincePlay < 10000) && (absDrift > 0.020);
                       
                       currentWarmPenalty.current += warmPenaltyPID.current.calculate(absDrift, dt, isAggressive);
-                      currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
+                      currentWarmPenalty.current = Math.max(0.100, Math.min(0.800, currentWarmPenalty.current)); // Strict clamp
                   }
                   
                   const penalty = isColdStartRef.current ? 1.5 : currentWarmPenalty.current;
@@ -659,7 +675,7 @@ export const useSyncEngine = ({
                   // 🟢 AHEAD
                   if (Date.now() - lastSeekTime.current < 5000 && !isColdStartRef.current) {
                       currentWarmPenalty.current -= (absDrift * 0.4);
-                      currentWarmPenalty.current = Math.max(0.100, currentWarmPenalty.current);
+                      currentWarmPenalty.current = Math.max(0.100, Math.min(0.800, currentWarmPenalty.current));
                   }
                   
                   lastSeekTime.current = 0;
@@ -668,7 +684,7 @@ export const useSyncEngine = ({
                       executeSoftGlide(absDrift);
                   } else {
                       const rawPauseMs = Math.round(absDrift * 1000) - 5;
-                      const cappedPauseMs = Math.min(rawPauseMs, 150); 
+                      const cappedPauseMs = Math.min(rawPauseMs, 100); // Strict 100ms cap
                       
                       if (cappedPauseMs > 10) {
                           logEvent('MICRO_PAUSE_CAPPED', { rawPauseMs, cappedPauseMs });
