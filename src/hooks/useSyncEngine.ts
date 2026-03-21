@@ -5,7 +5,7 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v9.1-Ultimate-Stability";
+export const ENGINE_VERSION = "v9.2-Dual-Glide-Compiled";
 
 // ============================================================================
 // PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING
@@ -263,7 +263,7 @@ export const useSyncEngine = ({
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a'); 
         a.href = dataStr; 
-        a.download = `sync_v9.1_SESSION_${Date.now()}.json`;
+        a.download = `sync_v9.2_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); 
         a.click(); 
         a.remove();
@@ -336,12 +336,11 @@ export const useSyncEngine = ({
     ignoreSyncUntil.current = Date.now() + lockoutMs; 
   }, [logEvent]);
 
-  // 🚀 FIX: The YouTube API Dual-Directional Glide
-  // 0.75x = Drop 0.25s of audio per second.
-  // 1.25x = Gain 0.25s of audio per second.
+  // 🚀 FIX: The Fatal Compilation Error is solved.
+  // The function signature now strictly accepts `direction` and routes YouTube to 0.75x or 1.25x.
   const executeSoftGlide = useCallback((driftSeconds: number, direction: 'ahead' | 'behind') => {
       const rate = direction === 'ahead' ? 0.75 : 1.25;
-      const virtualDiffPerSec = 0.25; 
+      const virtualDiffPerSec = 0.25; // Speed difference from 1.0x
       const holdTimeMs = Math.min((driftSeconds / virtualDiffPerSec) * 1000, 2000); 
       
       logEvent('SOFT_GLIDE_EXEC', { direction, driftSeconds, holdTimeMs, rate });
@@ -467,8 +466,6 @@ export const useSyncEngine = ({
          
          playheadStartTimeRef.current = Date.now(); 
          
-         // 🚀 V9.1 FIX: Annihilation of the >500ms "Cold Guess" Spikes
-         // We seek directly to the truth and let the PID loop cleanly calculate the hardware buffer time.
          executeHardSeek(expectedTime + currentWarmPenalty.current, `Absolute Resume: +${currentWarmPenalty.current.toFixed(3)}s`, 2500); 
          isColdStartRef.current = false; 
       }
@@ -638,7 +635,7 @@ export const useSyncEngine = ({
                       currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
                   }
 
-                  // 🚀 V9.1 FIX: Behind-drift under 200ms uses a clean 1.25x soft glide. No sledgehammers.
+                  // 🚀 V9.2 FIX: Any Behind-drift under 200ms uses a clean 1.25x soft glide.
                   if (absDrift < 0.200) {
                       executeSoftGlide(absDrift, 'behind');
                   } else {
@@ -655,7 +652,7 @@ export const useSyncEngine = ({
                   
                   lastSeekTime.current = 0;
 
-                  // 🚀 V9.1 FIX: Ahead-drift under 80ms uses a 0.75x soft glide.
+                  // 🚀 V9.2 FIX: Any Ahead-drift under 80ms uses a clean 0.75x soft glide.
                   if (absDrift > 0.010 && absDrift <= 0.080) {
                       executeSoftGlide(absDrift, 'ahead');
                   } else {
