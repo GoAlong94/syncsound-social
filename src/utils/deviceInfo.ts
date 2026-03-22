@@ -31,3 +31,20 @@ export const getDeviceInfo = () => {
 
   return { os, browser, userAgent: ua };
 };
+
+export const getOsIcon = (os: string): string => {
+  const icons: Record<string, string> = {
+    'Windows': '🪟', 'macOS': '🍎', 'iOS': '📱', 'Android': '🤖',
+    'Linux': '🐧', 'Windows Phone': '📱',
+  };
+  return icons[os] || '💻';
+};
+
+export const getBrowserIcon = (browser: string): string => {
+  const icons: Record<string, string> = {
+    'Chrome': '🌐', 'Chrome (iOS)': '🌐', 'Safari': '🧭',
+    'Firefox': '🦊', 'Firefox (iOS)': '🦊', 'Edge': '🔷',
+    'Edge (iOS)': '🔷', 'Opera': '🔴', 'Opera (iOS)': '🔴',
+  };
+  return icons[browser] || '🌐';
+};
