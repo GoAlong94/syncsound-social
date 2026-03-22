@@ -5,7 +5,7 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v10.1-PID-Windup-Killed";
+export const ENGINE_VERSION = "v9.5-Anti-Fingerprint-Stable";
 
 // ============================================================================
 // PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING
@@ -148,13 +148,10 @@ const cancelAnimFrame = (id: number) => {
     }
 };
 
+// 🚀 FIX: The 60fps Anti-Tracking Trap is removed.
+// We strictly rely on the cached OS and Browser strings. No live navigator calls.
 const getAudioHardwareOffset = (os: string, browser: string): number => {
-  let isIPad = false;
-  if (typeof navigator !== 'undefined') {
-      isIPad = (navigator.maxTouchPoints || 0) > 1 && /Mac/i.test(navigator.userAgent || '');
-  }
-  
-  if (os === 'iOS' || os === 'iPadOS' || isIPad) return 0.055; 
+  if (os === 'iOS' || os === 'iPadOS') return 0.055; 
   if (os === 'macOS' && browser.includes('Safari')) return 0.020;
   if (os === 'macOS' && browser.includes('Chrome')) return 0.035; 
   if (os === 'Android') return 0.090; 
@@ -216,6 +213,7 @@ export const useSyncEngine = ({
       handlers.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; 
   });
   
+  // Clean initialization. Runs strictly once per mount.
   const deviceInfo = useRef(getDeviceInfo());
   const wakeLockRef = useRef<any>(null);
 
@@ -231,9 +229,10 @@ export const useSyncEngine = ({
   const playheadStartTimeRef = useRef<number>(0); 
   
   const warmPenaltyPID = useRef(new PIDController(0.6, 0.05, 0.1, -0.200, 0.800)); 
-  const currentWarmPenalty = useRef<number>(deviceInfo.current.os === 'iOS' ? 0.350 : 0.150);
+  const currentWarmPenalty = useRef<number>(deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'iPadOS' ? 0.350 : 0.150);
   
   const ignoreSyncUntil = useRef<number>(0);
+  const softGlideUntil = useRef<number>(0);
   const postBufferGracePeriodUntil = useRef<number>(0); 
   const lastSeekTime = useRef<number>(0);
   const lastHostBroadcastTime = useRef<number>(0);
@@ -284,7 +283,7 @@ export const useSyncEngine = ({
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a'); 
         a.href = dataStr; 
-        a.download = `sync_v10.1_SESSION_${Date.now()}.json`;
+        a.download = `sync_v9.5_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); 
         a.click(); 
         a.remove();
@@ -488,7 +487,6 @@ export const useSyncEngine = ({
         return;
       }
 
-      // NETWORK BROADCAST RECEIVER
       if (payload.isPlaying && !wasPlaying) {
          if (Date.now() < ignoreSyncUntil.current) return;
          
@@ -497,8 +495,6 @@ export const useSyncEngine = ({
          
          playheadStartTimeRef.current = Date.now(); 
          
-         // 🚀 V10.1 FIX: Restore the Cold Start Spin-Up Guess. 
-         // Solves the >500ms drop-in spike by accurately predicting the physical iOS media engine delay.
          if (isColdStartRef.current) {
              const coldPenalty = (deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'iPadOS') ? 1.500 : 0.800;
              executeHardSeek(expectedTime + coldPenalty, `Cold Net Resume: +${coldPenalty}s`, 3500); 
@@ -664,7 +660,6 @@ export const useSyncEngine = ({
       wasPlayingRef.current = true;
 
       if (justResumed && absDrift > tolerance) {
-          // LOCAL LOOP RESUME STRIKE
           const penalty = isColdStartRef.current ? ((deviceInfo.current.os === 'iOS' || deviceInfo.current.os === 'iPadOS') ? 1.500 : 0.800) : currentWarmPenalty.current;
           executeHardSeek(expectedTime + penalty, `Local Resume Strike. Pen: ${penalty.toFixed(3)}s`, 3500);
           if (isColdStartRef.current) isColdStartRef.current = false;
@@ -688,11 +683,10 @@ export const useSyncEngine = ({
                       const isAggressive = (timeSincePlay < 10000) && (absDrift > 0.025);
                       
                       currentWarmPenalty.current += warmPenaltyPID.current.calculate(absDrift, dt, isAggressive);
-                      // 🚀 V10.1 FIX: KILL PID WINDUP. Hard cap at 400ms prevents infinite Ringing overshoots.
                       currentWarmPenalty.current = Math.max(0.100, Math.min(0.400, currentWarmPenalty.current));
                   }
 
-                  if (absDrift < 0.150) {
+                  if (absDrift < 0.200) {
                       executeSoftGlide(absDrift, 'behind');
                   } else {
                       executeHardSeek(expectedTime + currentWarmPenalty.current, `Macro-Behind: ${absDrift.toFixed(3)}s`, 2500);
