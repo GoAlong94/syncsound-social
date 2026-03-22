@@ -5,7 +5,7 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v9.2-Dual-Glide-Compiled";
+export const ENGINE_VERSION = "v9.3-Zero-Crash";
 
 // ============================================================================
 // PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING
@@ -133,8 +133,14 @@ class PIDController {
   }
 }
 
+// Safely wrapped to prevent ReferenceErrors during Lovable compilation
 const getAudioHardwareOffset = (os: string, browser: string): number => {
-  if (os === 'iOS') return 0.055; 
+  let isIPad = false;
+  if (typeof navigator !== 'undefined') {
+      isIPad = (navigator.maxTouchPoints || 0) > 1 && /Mac/i.test(navigator.userAgent);
+  }
+  
+  if (os === 'iOS' || isIPad) return 0.055; 
   if (os === 'macOS' && browser.includes('Safari')) return 0.020;
   if (os === 'macOS' && browser.includes('Chrome')) return 0.035; 
   if (os === 'Android') return 0.090; 
@@ -196,7 +202,8 @@ export const useSyncEngine = ({
       handlers.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; 
   });
   
-  const deviceInfo = useRef({ ...getDeviceInfo() });
+  // Clean, strictly safe initialization
+  const deviceInfo = useRef(getDeviceInfo());
   const wakeLockRef = useRef<any>(null);
 
   const ntpAnalyzer = useRef(new NTPAnalyzer());
@@ -263,7 +270,7 @@ export const useSyncEngine = ({
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a'); 
         a.href = dataStr; 
-        a.download = `sync_v9.2_SESSION_${Date.now()}.json`;
+        a.download = `sync_v9.3_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); 
         a.click(); 
         a.remove();
@@ -336,11 +343,9 @@ export const useSyncEngine = ({
     ignoreSyncUntil.current = Date.now() + lockoutMs; 
   }, [logEvent]);
 
-  // 🚀 FIX: The Fatal Compilation Error is solved.
-  // The function signature now strictly accepts `direction` and routes YouTube to 0.75x or 1.25x.
   const executeSoftGlide = useCallback((driftSeconds: number, direction: 'ahead' | 'behind') => {
       const rate = direction === 'ahead' ? 0.75 : 1.25;
-      const virtualDiffPerSec = 0.25; // Speed difference from 1.0x
+      const virtualDiffPerSec = 0.25; 
       const holdTimeMs = Math.min((driftSeconds / virtualDiffPerSec) * 1000, 2000); 
       
       logEvent('SOFT_GLIDE_EXEC', { direction, driftSeconds, holdTimeMs, rate });
@@ -400,6 +405,7 @@ export const useSyncEngine = ({
         
         const dynamicQ = pingCountRef.current < 15 ? 0.5 : 0.01;
         const rtt = kalmanRtt.current.filter(Date.now() - payload.t, dynamicQ); 
+        
         const offset = payload.ht - payload.t - (rtt / 2);
         
         ntpAnalyzer.current.addSample(rtt, offset);
@@ -624,7 +630,7 @@ export const useSyncEngine = ({
               setSyncStatus('syncing');
               
               if (drift > 0) {
-                  // 🔴 BEHIND
+                  // BEHIND
                   const dt = (Date.now() - lastSeekTime.current) / 1000;
                   
                   if (dt > 0 && dt < 15) {
@@ -635,7 +641,6 @@ export const useSyncEngine = ({
                       currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
                   }
 
-                  // 🚀 V9.2 FIX: Any Behind-drift under 200ms uses a clean 1.25x soft glide.
                   if (absDrift < 0.200) {
                       executeSoftGlide(absDrift, 'behind');
                   } else {
@@ -644,7 +649,7 @@ export const useSyncEngine = ({
                   }
                   
               } else {
-                  // 🟢 AHEAD
+                  // AHEAD
                   if (Date.now() - lastSeekTime.current < 5000) {
                       currentWarmPenalty.current -= (absDrift * 0.4);
                       currentWarmPenalty.current = Math.max(0.100, Math.min(0.800, currentWarmPenalty.current));
@@ -652,7 +657,6 @@ export const useSyncEngine = ({
                   
                   lastSeekTime.current = 0;
 
-                  // 🚀 V9.2 FIX: Any Ahead-drift under 80ms uses a clean 0.75x soft glide.
                   if (absDrift > 0.010 && absDrift <= 0.080) {
                       executeSoftGlide(absDrift, 'ahead');
                   } else {
