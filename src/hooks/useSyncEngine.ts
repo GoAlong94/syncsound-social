@@ -5,7 +5,7 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v9.4-Production-Stable";
+export const ENGINE_VERSION = "v10.0-Enterprise-Scale";
 
 // ============================================================================
 // PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING
@@ -133,7 +133,7 @@ class PIDController {
   }
 }
 
-// 🚀 FIX: SSR Safe Hardware Animation Wrappers to prevent compilation crashes
+// 🚀 SSR Safe Hardware Animation Wrappers
 const requestAnimFrame = (cb: FrameRequestCallback): number => {
     if (typeof window !== 'undefined' && window.requestAnimationFrame) {
         return window.requestAnimationFrame(cb);
@@ -235,7 +235,6 @@ export const useSyncEngine = ({
   const currentWarmPenalty = useRef<number>(deviceInfo.current.os === 'iOS' ? 0.350 : 0.150);
   
   const ignoreSyncUntil = useRef<number>(0);
-  const softGlideUntil = useRef<number>(0);
   const postBufferGracePeriodUntil = useRef<number>(0); 
   const lastSeekTime = useRef<number>(0);
   const lastHostBroadcastTime = useRef<number>(0);
@@ -250,6 +249,9 @@ export const useSyncEngine = ({
   const requestRef = useRef<number>();
   const lastUiUpdateTime = useRef<number>(0);
   const lastSeenLocalTime = useRef<number>(-1);
+
+  // 🚀 V10 UPGRADE: Hardware-Bound Glide Tracking (Replaces inaccurate setTimeout)
+  const activeGlideRef = useRef<{ isActive: boolean; endTime: number; rate: number }>({ isActive: false, endTime: 0, rate: 1.0 });
 
   const syncLogs = useRef<any[]>([]);
   const collectedLogsRef = useRef<Record<string, any[]>>({});
@@ -284,7 +286,7 @@ export const useSyncEngine = ({
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a'); 
         a.href = dataStr; 
-        a.download = `sync_v9.4_SESSION_${Date.now()}.json`;
+        a.download = `sync_v10.0_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); 
         a.click(); 
         a.remove();
@@ -356,6 +358,9 @@ export const useSyncEngine = ({
         catchupTimeout.current = null; 
     }
     
+    // Safety abort for hardware glides
+    activeGlideRef.current.isActive = false;
+    
     handlers.current.seekTo(time);
     
     if (epochRef.current.isPlaying) {
@@ -375,13 +380,14 @@ export const useSyncEngine = ({
       logEvent('SOFT_GLIDE_EXEC', { direction, driftSeconds, holdTimeMs, rate });
       handlers.current.setPlaybackRate(rate);
       
-      softGlideUntil.current = Date.now() + holdTimeMs;
-      ignoreSyncUntil.current = Date.now() + holdTimeMs + 200; 
+      // 🚀 V10 UPGRADE: Hand off glide termination to the hardware requestAnimationFrame loop!
+      activeGlideRef.current = {
+          isActive: true,
+          endTime: Date.now() + holdTimeMs,
+          rate: rate
+      };
       
-      setTimeout(() => { 
-          handlers.current.setPlaybackRate(1.0); 
-          logEvent('SOFT_GLIDE_END', { restoredRate: 1.0 });
-      }, holdTimeMs);
+      ignoreSyncUntil.current = Date.now() + holdTimeMs + 200; 
   }, [logEvent]);
 
   const requestSync = useCallback(() => { 
@@ -412,7 +418,8 @@ export const useSyncEngine = ({
         browser: p.browser || '?', 
         syncStatus: p.syncStatus || 'unsynced', 
         latency: p.latency || 0, 
-        lastSyncDelta: p.lastSyncDelta || 0,
+        jitter: p.jitter || 0, 
+        cachedVideoId: p.cachedVideoId
       })));
     });
 
@@ -426,7 +433,7 @@ export const useSyncEngine = ({
       if (!isHost && payload.target === userId && !isNtpFrozenRef.current) {
         pingCountRef.current += 1;
         
-        const dynamicQ = pingCountRef.current < 15 ? 0.5 : 0.01;
+        const dynamicQ = pingCountRef.current < 10 ? 0.5 : 0.01;
         const rtt = kalmanRtt.current.filter(Date.now() - payload.t, dynamicQ); 
         const offset = payload.ht - payload.t - (rtt / 2);
         
@@ -439,12 +446,13 @@ export const useSyncEngine = ({
         setLatency(Math.round(metrics.rtt)); 
         setNetworkJitter(Math.round(metrics.jitter));
 
-        if (pingCountRef.current > 45) {
+        // 🚀 V10 SCALABILITY: Drop required pings from 45 to 12. Host CPU saved.
+        if (pingCountRef.current > 12) {
             isNtpFrozenRef.current = true;
             logEvent('NTP_FROZEN_LOCKED', { finalOffset: metrics.offset, finalJitter: metrics.jitter });
         }
         
-        if (Math.random() < 0.15) { 
+        if (Math.random() < 0.20) { 
             channel.track({ 
                 id: userId, 
                 isHost, 
@@ -533,15 +541,21 @@ export const useSyncEngine = ({
         });
 
         if (!isHost) {
-          let pings = 0;
-          const interval = setInterval(() => {
-             if (pings++ < 45) {
-                 channel.send({ type: 'broadcast', event: 'ping', payload: { t: Date.now(), sId: userId } });
-             } else { 
-                 clearInterval(interval); 
-                 channel.send({ type: 'broadcast', event: 'sync_req', payload: { sId: userId } }); 
-             }
-          }, 150);
+          // 🚀 V10 SCALABILITY: Random Handshake Backoff (0s to 2.5s)
+          // Prevents 1,000 joining users from crashing the Host's CPU simultaneously.
+          const backoffDelay = Math.floor(Math.random() * 2500);
+          
+          setTimeout(() => {
+              let pings = 0;
+              const interval = setInterval(() => {
+                 if (pings++ < 12) { // Dropped from 45 to 12
+                     channel.send({ type: 'broadcast', event: 'ping', payload: { t: Date.now(), sId: userId } });
+                 } else { 
+                     clearInterval(interval); 
+                     channel.send({ type: 'broadcast', event: 'sync_req', payload: { sId: userId } }); 
+                 }
+              }, 200); // Throttled ping frequency
+          }, backoffDelay);
         }
       }
     });
@@ -564,6 +578,20 @@ export const useSyncEngine = ({
       if (isHost) {
           requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
           return;
+      }
+
+      // 🚀 V10 FIX: Hardware Glide Termination
+      // We process this BEFORE any lockouts to ensure the rate is strictly restored on time.
+      if (activeGlideRef.current.isActive) {
+          if (Date.now() >= activeGlideRef.current.endTime) {
+              handlers.current.setPlaybackRate(1.0);
+              activeGlideRef.current.isActive = false;
+              logEvent('SOFT_GLIDE_END', { restoredRate: 1.0 });
+          } else {
+              // If we are actively gliding, skip the rest of the evaluation loop so we don't calculate fake drift!
+              requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
+              return;
+          }
       }
 
       const epoch = epochRef.current;
@@ -611,7 +639,7 @@ export const useSyncEngine = ({
           return;
       }
 
-      if (Date.now() < ignoreSyncUntil.current || Date.now() < softGlideUntil.current || Date.now() < postBufferGracePeriodUntil.current) {
+      if (Date.now() < ignoreSyncUntil.current || Date.now() < postBufferGracePeriodUntil.current) {
           requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
           return;
       }
@@ -634,7 +662,10 @@ export const useSyncEngine = ({
       
       lastSyncDeltaRef.current = Math.round(absDrift * 1000);
       
-      const tolerance = 0.010;
+      // 🚀 V10 FIX: The 18ms Minimum Frame Paradox Limit.
+      // You cannot hit a 10ms target with a 16.6ms arrow (60Hz Screen).
+      // 18ms completely eliminates infinite oscillating on mobile phones while staying deep under Haas threshold.
+      const tolerance = 0.018; 
 
       const justResumed = !wasPlayingRef.current;
       wasPlayingRef.current = true;
@@ -657,7 +688,7 @@ export const useSyncEngine = ({
                   
                   if (dt > 0 && dt < 15) {
                       const timeSincePlay = Date.now() - playheadStartTimeRef.current;
-                      const isAggressive = (timeSincePlay < 10000) && (absDrift > 0.020);
+                      const isAggressive = (timeSincePlay < 10000) && (absDrift > 0.025);
                       
                       currentWarmPenalty.current += warmPenaltyPID.current.calculate(absDrift, dt, isAggressive);
                       currentWarmPenalty.current = Math.min(1.2, currentWarmPenalty.current);
@@ -679,7 +710,7 @@ export const useSyncEngine = ({
                   
                   lastSeekTime.current = 0;
 
-                  if (absDrift > 0.010 && absDrift <= 0.080) {
+                  if (absDrift > 0.018 && absDrift <= 0.080) {
                       executeSoftGlide(absDrift, 'ahead');
                   } else {
                       const rawPauseMs = Math.round(absDrift * 1000) - 5;
@@ -755,7 +786,9 @@ export const useSyncEngine = ({
 
       const now = Date.now();
       
-      if (stateChanged || now - lastHostBroadcastTime.current > 2500) {
+      // 🚀 V10 SCALABILITY: Host Heartbeat throttled from 2.5s to 5.0s to save global bandwidth limits.
+      // Critical state changes (Pause/Play) still broadcast instantly.
+      if (stateChanged || now - lastHostBroadcastTime.current > 5000) {
         channelRef.current?.send({ type: 'broadcast', event: 'sync', payload: epochRef.current });
         lastHostBroadcastTime.current = now;
         
