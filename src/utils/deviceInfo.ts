@@ -1,6 +1,7 @@
 import { Apple, Chrome, Compass, Monitor, Smartphone, Globe } from 'lucide-react';
 
 export const getDeviceInfo = () => {
+  // Safety Check: Prevents fatal crashes during compilation or strict rendering environments
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
     return { os: 'Unknown', browser: 'Unknown', userAgent: 'Unknown' };
   }
@@ -28,6 +29,7 @@ export const getDeviceInfo = () => {
   else if (/mac/i.test(ua)) os = 'macOS';
   else if (/linux/i.test(ua)) os = 'Linux';
 
+  // Strict Browser Hierarchy Detection (Solves the Safari/Chrome bug)
   if (/CriOS/i.test(ua)) browser = 'Chrome';
   else if (/FxiOS/i.test(ua)) browser = 'Firefox';
   else if (/EdgiOS/i.test(ua)) browser = 'Edge';
