@@ -412,6 +412,7 @@ export const useSyncEngine = ({
         browser: p.browser || '?', 
         syncStatus: p.syncStatus || 'unsynced', 
         latency: p.latency || 0, 
+        lastSyncDelta: p.lastSyncDelta || 0,
         jitter: p.jitter || 0, 
         cachedVideoId: p.cachedVideoId
       })));
