@@ -1,17 +1,25 @@
 import { Apple, Chrome, Compass, Monitor, Smartphone, Globe } from 'lucide-react';
 
 export const getDeviceInfo = () => {
-  // Safety Check: Prevents fatal crashes during compilation or Server Side Rendering
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
     return { os: 'Unknown', browser: 'Unknown', userAgent: 'Unknown' };
   }
 
-  const ua = navigator.userAgent || '';
+  let ua = '';
+  let touchPoints = 0;
+
+  // 🚀 FIX: Shield against Advanced Tracking Protection crashes
+  try {
+    ua = navigator.userAgent || '';
+    touchPoints = navigator.maxTouchPoints || 0;
+  } catch (e) {
+    console.warn("Device info blocked by anti-tracking protection.");
+  }
+
   let browser = 'Unknown';
   let os = 'Unknown';
 
-  // Precise OS Detection (with strict iPad Disguise Strip)
-  const isIPad = /Mac/i.test(ua) && typeof navigator.maxTouchPoints !== 'undefined' && navigator.maxTouchPoints > 1;
+  const isIPad = /Mac/i.test(ua) && touchPoints > 1;
 
   if (/windows phone/i.test(ua)) os = 'Windows Phone';
   else if (/win/i.test(ua)) os = 'Windows';
@@ -20,7 +28,6 @@ export const getDeviceInfo = () => {
   else if (/mac/i.test(ua)) os = 'macOS';
   else if (/linux/i.test(ua)) os = 'Linux';
 
-  // Strict Browser Hierarchy Detection (Solves the iOS Safari/Chrome trap)
   if (/CriOS/i.test(ua)) browser = 'Chrome';
   else if (/FxiOS/i.test(ua)) browser = 'Firefox';
   else if (/EdgiOS/i.test(ua)) browser = 'Edge';
@@ -44,7 +51,6 @@ export const getOsIcon = (os: string) => {
 export const getBrowserIcon = (browser: string) => {
   if (browser.includes('Chrome')) return Chrome;
   if (browser.includes('Safari')) return Compass;
-  if (browser.includes('Firefox')) return Globe;
-  if (browser.includes('Edge')) return Globe;
+  if (browser.includes('Firefox') || browser.includes('Edge')) return Globe;
   return Globe;
 };
