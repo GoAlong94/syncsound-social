@@ -5,7 +5,7 @@ import { QueueState } from '@/types/queue';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getDeviceInfo } from '@/utils/deviceInfo';
 
-export const ENGINE_VERSION = "v9.3-Zero-Crash";
+export const ENGINE_VERSION = "v9.4-Production-Stable";
 
 // ============================================================================
 // PART 1: ENTERPRISE CONTROL THEORY & SIGNAL PROCESSING
@@ -133,11 +133,26 @@ class PIDController {
   }
 }
 
-// Safely wrapped to prevent ReferenceErrors during Lovable compilation
+// 🚀 FIX: SSR Safe Hardware Animation Wrappers to prevent compilation crashes
+const requestAnimFrame = (cb: FrameRequestCallback): number => {
+    if (typeof window !== 'undefined' && window.requestAnimationFrame) {
+        return window.requestAnimationFrame(cb);
+    }
+    return setTimeout(() => cb(Date.now()), 16) as any;
+};
+
+const cancelAnimFrame = (id: number) => {
+    if (typeof window !== 'undefined' && window.cancelAnimationFrame) {
+        window.cancelAnimationFrame(id);
+    } else {
+        clearTimeout(id);
+    }
+};
+
 const getAudioHardwareOffset = (os: string, browser: string): number => {
   let isIPad = false;
   if (typeof navigator !== 'undefined') {
-      isIPad = (navigator.maxTouchPoints || 0) > 1 && /Mac/i.test(navigator.userAgent);
+      isIPad = (navigator.maxTouchPoints || 0) > 1 && /Mac/i.test(navigator.userAgent || '');
   }
   
   if (os === 'iOS' || isIPad) return 0.055; 
@@ -202,7 +217,6 @@ export const useSyncEngine = ({
       handlers.current = { getCurrentTime, seekTo, setPlaybackRate, play, pause, getPlayerState, onVideoChange, onQueueUpdate }; 
   });
   
-  // Clean, strictly safe initialization
   const deviceInfo = useRef(getDeviceInfo());
   const wakeLockRef = useRef<any>(null);
 
@@ -270,7 +284,7 @@ export const useSyncEngine = ({
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(collectedLogsRef.current, null, 2));
         const a = document.createElement('a'); 
         a.href = dataStr; 
-        a.download = `sync_v9.3_SESSION_${Date.now()}.json`;
+        a.download = `sync_v9.4_SESSION_${Date.now()}.json`;
         document.body.appendChild(a); 
         a.click(); 
         a.remove();
@@ -290,18 +304,22 @@ export const useSyncEngine = ({
       }
     };
     
-    window.addEventListener('beforeunload', handleUnload);
-    window.addEventListener('pagehide', handleUnload);
+    if (typeof window !== 'undefined') {
+        window.addEventListener('beforeunload', handleUnload);
+        window.addEventListener('pagehide', handleUnload);
+    }
     
     return () => {
-       window.removeEventListener('beforeunload', handleUnload);
-       window.removeEventListener('pagehide', handleUnload);
+       if (typeof window !== 'undefined') {
+           window.removeEventListener('beforeunload', handleUnload);
+           window.removeEventListener('pagehide', handleUnload);
+       }
     };
   }, [isHost, userId, logEvent]);
 
   useEffect(() => {
     const acquireWakeLock = async () => { 
-        if ('wakeLock' in navigator && !wakeLockRef.current) { 
+        if (typeof navigator !== 'undefined' && 'wakeLock' in navigator && !wakeLockRef.current) { 
             try { 
                 wakeLockRef.current = await (navigator as any).wakeLock.request('screen'); 
             } catch (e) {} 
@@ -310,7 +328,7 @@ export const useSyncEngine = ({
     acquireWakeLock();
     
     const handleVis = () => { 
-        if (document.visibilityState === 'visible') { 
+        if (typeof document !== 'undefined' && document.visibilityState === 'visible') { 
             acquireWakeLock(); 
             if (!isHost) { 
                 logEvent('APP_FOREGROUNDED', {}); 
@@ -320,8 +338,14 @@ export const useSyncEngine = ({
         } 
     };
     
-    document.addEventListener('visibilitychange', handleVis);
-    return () => document.removeEventListener('visibilitychange', handleVis);
+    if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', handleVis);
+    }
+    return () => {
+        if (typeof document !== 'undefined') {
+            document.removeEventListener('visibilitychange', handleVis);
+        }
+    };
   }, [isHost, logEvent, userId]);
 
   const executeHardSeek = useCallback((time: number, reason: string, lockoutMs = 2500) => {
@@ -405,7 +429,6 @@ export const useSyncEngine = ({
         
         const dynamicQ = pingCountRef.current < 15 ? 0.5 : 0.01;
         const rtt = kalmanRtt.current.filter(Date.now() - payload.t, dynamicQ); 
-        
         const offset = payload.ht - payload.t - (rtt / 2);
         
         ntpAnalyzer.current.addSample(rtt, offset);
@@ -540,13 +563,13 @@ export const useSyncEngine = ({
   const runHardwareEvaluationLoop = useCallback((timestamp: number) => {
       
       if (isHost) {
-          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
           return;
       }
 
       const epoch = epochRef.current;
       if (!epoch.videoId) {
-          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
           return;
       }
 
@@ -559,7 +582,7 @@ export const useSyncEngine = ({
       
       if (playerState === 3 || playerState === -1) {
           postBufferGracePeriodUntil.current = Date.now() + 500;
-          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
           return;
       }
 
@@ -585,19 +608,19 @@ export const useSyncEngine = ({
           }
           
           setSyncStatus('synced'); 
-          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
           return;
       }
 
       if (Date.now() < ignoreSyncUntil.current || Date.now() < softGlideUntil.current || Date.now() < postBufferGracePeriodUntil.current) {
-          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
           return;
       }
 
       const localTime = handlers.current.getCurrentTime();
       
       if (playerState === 1 && localTime === lastSeenLocalTime.current) {
-          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
           return;
       }
       
@@ -619,7 +642,7 @@ export const useSyncEngine = ({
 
       if (justResumed && absDrift > tolerance) {
           executeHardSeek(expectedTime + currentWarmPenalty.current, `Resume Strike. Pen: ${currentWarmPenalty.current.toFixed(3)}s`, 3500);
-          requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+          requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
           return;
       }
 
@@ -691,15 +714,14 @@ export const useSyncEngine = ({
           }
       }
       
-      requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+      requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
   }, [isHost, executeHardSeek, executeSoftGlide, logEvent]);
 
-  // Mount the Hardware Loop
   useEffect(() => {
-      requestRef.current = requestAnimationFrame(runHardwareEvaluationLoop);
+      requestRef.current = requestAnimFrame(runHardwareEvaluationLoop);
       return () => {
           if (requestRef.current) {
-              cancelAnimationFrame(requestRef.current);
+              cancelAnimFrame(requestRef.current);
           }
       };
   }, [runHardwareEvaluationLoop]);
