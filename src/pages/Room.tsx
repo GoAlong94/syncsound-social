@@ -21,7 +21,14 @@ const Room = () => {
   const navigate = useNavigate();
   const isHost = searchParams.get('host') === 'true';
   
-  const [userId] = useState(() => crypto.randomUUID());
+  // 🚀 FIX: Fatal White Screen Crash (crypto.randomUUID fails on HTTP dev environments)
+  const [userId] = useState(() => {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+          return crypto.randomUUID();
+      }
+      return 'user_' + Math.random().toString(36).substring(2, 15);
+  });
+
   const [videoId, setVideoId] = useState<string | null>(null);
   const [videoTitle, setVideoTitle] = useState<string | null>(null);
   const [videoThumbnail, setVideoThumbnail] = useState<string | null>(null);
@@ -30,7 +37,6 @@ const Room = () => {
   const [copied, setCopied] = useState(false);
   const [hasSeenHost, setHasSeenHost] = useState(false);
   
-  // NEW: Spatial Audio Echo Warning
   const [showEchoWarning, setShowEchoWarning] = useState(true);
 
   const playerControlsRef = useRef<{
@@ -58,21 +64,9 @@ const Room = () => {
   }, [isSynced, isHost]);
 
   const {
-    connectedDevices,
-    latency,
-    syncStatus,
-    lastSyncDelta,
-    broadcastPlay,
-    broadcastPause,
-    broadcastVideoChange,
-    broadcastQueueUpdate,
-    forceResync,
-    manualResync,
-    measureLatency,
-    downloadLogs,
-    deviceInfo,
-    setCurrentVideoId,
-    reportPreloadReady
+    connectedDevices, latency, syncStatus, lastSyncDelta, broadcastPlay, broadcastPause,
+    broadcastVideoChange, broadcastQueueUpdate, forceResync, manualResync, measureLatency,
+    downloadLogs, deviceInfo, setCurrentVideoId, reportPreloadReady
   } = useSyncEngine({
     roomId: roomId || '',
     isHost,
@@ -84,19 +78,14 @@ const Room = () => {
     pause: () => playerControlsRef.current?.pause(),
     getPlayerState: () => playerControlsRef.current?.getPlayerState() || -1,
     onVideoChange: handleVideoChange,
-    onQueueUpdate: (queue) => {
-      syncQueue(queue);
-    },
+    onQueueUpdate: (queue) => { syncQueue(queue); },
   });
 
   const {
     queue, addToQueue, removeFromQueue, playNext, playPrevious, playAtIndex, syncQueue, moveItem, hasNext, hasPrevious, isQueueFull,
   } = useVideoQueue({
     onVideoChange: (vid, title, thumb) => {
-      setVideoId(vid);
-      setVideoTitle(title);
-      setVideoThumbnail(thumb);
-      setCurrentVideoId(vid); 
+      setVideoId(vid); setVideoTitle(title); setVideoThumbnail(thumb); setCurrentVideoId(vid); 
       if (isHost) broadcastVideoChange(vid, title, thumb);
     },
     broadcastQueueUpdate: isHost ? broadcastQueueUpdate : undefined,
@@ -122,10 +111,8 @@ const Room = () => {
 
   const handleSync = useCallback(() => {
     if (playerControlsRef.current) {
-      playerControlsRef.current.play();
-      playerControlsRef.current.unmute();
-      setIsSynced(true);
-      manualResync();
+      playerControlsRef.current.play(); playerControlsRef.current.unmute();
+      setIsSynced(true); manualResync();
       toast.success('Audio synced and unmuted!');
     }
   }, [manualResync]);
@@ -133,8 +120,7 @@ const Room = () => {
   const copyRoomCode = async () => {
     if (roomId) {
       await navigator.clipboard.writeText(roomId);
-      setCopied(true);
-      toast.success('Room code copied!');
+      setCopied(true); toast.success('Room code copied!');
       setTimeout(() => setCopied(false), 2000);
     }
   };
@@ -142,71 +128,44 @@ const Room = () => {
   const shareRoom = async () => {
     const shareUrl = window.location.href.replace('?host=true', '');
     if (navigator.share) {
-      try {
-        await navigator.share({
-          title: 'Join my Social Sync party!',
-          text: `Join my audio party! Room code: ${roomId}`,
-          url: shareUrl,
-        });
-      } catch (error) {}
+      try { await navigator.share({ title: 'Join my Social Sync party!', text: `Join my audio party! Room code: ${roomId}`, url: shareUrl, }); } catch (error) {}
     } else {
-      await navigator.clipboard.writeText(shareUrl);
-      toast.success('Share link copied!');
+      await navigator.clipboard.writeText(shareUrl); toast.success('Share link copied!');
     }
   };
 
   useEffect(() => {
     if (isHost) return;
-
     const hostActive = connectedDevices.some(d => d.isHost);
     
     if (hostActive) {
-      if (!hasSeenHost) {
-          setHasSeenHost(true);
-      }
+      if (!hasSeenHost) setHasSeenHost(true);
       return; 
     }
 
     if (!hasSeenHost) {
-      const validationTimer = setTimeout(() => {
-        toast.error("Invalid Room Code or Host not found.");
-        navigate('/');
-      }, 8000);
+      const validationTimer = setTimeout(() => { toast.error("Invalid Room Code or Host not found."); navigate('/'); }, 8000);
       return () => clearTimeout(validationTimer);
-      
     } else {
-      const disconnectTimer = setTimeout(() => {
-        toast.error("The Host has ended the session.");
-        navigate('/');
-      }, 5000);
+      const disconnectTimer = setTimeout(() => { toast.error("The Host has ended the session."); navigate('/'); }, 5000);
       return () => clearTimeout(disconnectTimer);
     }
   }, [connectedDevices, isHost, hasSeenHost, navigate]);
 
   const currentQueueIndex = queue.items.findIndex(item => item.id === videoId);
-  const nextVideoId = (currentQueueIndex !== -1 && currentQueueIndex < queue.items.length - 1)
-    ? queue.items[currentQueueIndex + 1].id : null;
+  const nextVideoId = (currentQueueIndex !== -1 && currentQueueIndex < queue.items.length - 1) ? queue.items[currentQueueIndex + 1].id : null;
 
   return (
     <div className="min-h-screen flex flex-col p-4 md:p-6">
-      <motion.header
-        initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}
-        className="flex items-center justify-between mb-6"
-      >
+      <motion.header initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between mb-6">
         <button onClick={() => navigate('/')} className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors">
           <ArrowLeft className="w-5 h-5" />
           <span className="hidden sm:inline">Leave Room</span>
         </button>
 
         <div className="flex items-center gap-3">
-          
           {isHost && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={downloadLogs}
-              className="flex items-center gap-2 text-xs font-mono bg-slate-800 text-slate-300 border-slate-600 hover:bg-slate-700"
-            >
+            <Button variant="outline" size="sm" onClick={downloadLogs} className="flex items-center gap-2 text-xs font-mono bg-slate-800 text-slate-300 border-slate-600 hover:bg-slate-700">
               <Download className="w-3 h-3" />
               <span className="hidden sm:inline">Get Logs</span>
             </Button>
@@ -220,30 +179,18 @@ const Room = () => {
             </button>
           </div>
 
-          <motion.button
-            whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-            onClick={shareRoom} className="p-3 rounded-xl bg-primary text-primary-foreground"
-          >
+          <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={shareRoom} className="p-3 rounded-xl bg-primary text-primary-foreground">
             <Share2 className="w-5 h-5" />
           </motion.button>
         </div>
       </motion.header>
 
-      <motion.div
-        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-        className="flex flex-col items-center justify-center gap-4 mb-6"
-      >
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="flex flex-col items-center justify-center gap-4 mb-6">
         <DeviceCounter devices={connectedDevices} latency={latency} />
         
-        {/* SPATIAL AUDIO ECHO WARNING */}
         <AnimatePresence>
           {connectedDevices.length > 1 && showEchoWarning && (
-             <motion.div 
-               initial={{ opacity: 0, height: 0 }}
-               animate={{ opacity: 1, height: 'auto' }}
-               exit={{ opacity: 0, height: 0 }}
-               className="w-full max-w-xl bg-blue-900/30 border border-blue-500/30 rounded-xl p-3 flex items-start justify-between backdrop-blur-md"
-             >
+             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="w-full max-w-xl bg-blue-900/30 border border-blue-500/30 rounded-xl p-3 flex items-start justify-between backdrop-blur-md">
                <div className="flex gap-3 items-center">
                  <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
                  <p className="text-xs text-blue-200">
@@ -251,9 +198,7 @@ const Room = () => {
                    Sound waves physically collide if phones touch. Place devices at least <strong>3 to 6 feet (1-2 meters) apart</strong> to allow your brain to process the true spatial audio.
                  </p>
                </div>
-               <button onClick={() => setShowEchoWarning(false)} className="text-blue-400 hover:text-white p-1">
-                 <X className="w-4 h-4" />
-               </button>
+               <button onClick={() => setShowEchoWarning(false)} className="text-blue-400 hover:text-white p-1"><X className="w-4 h-4" /></button>
              </motion.div>
           )}
         </AnimatePresence>
@@ -261,38 +206,18 @@ const Room = () => {
 
       <div className="flex-1 flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto w-full">
         <div className="flex-1 flex flex-col">
-          
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 }}
-            className="mb-4 relative"
-          >
+          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 }} className="mb-4 relative">
             <div className="absolute -top-6 right-0 text-[10px] text-zinc-600 font-mono tracking-widest uppercase">
                Engine: {ENGINE_VERSION}
             </div>
 
-            <VideoPlayer
-              videoId={videoId}
-              nextVideoId={nextVideoId} 
-              videoTitle={videoTitle}
-              videoThumbnail={videoThumbnail}
-              isHost={isHost}
-              isPlaying={isPlaying}
-              isSynced={isSynced}
-              onPlay={handlePlay}
-              onPause={handlePause}
-              onPlayerReady={handlePlayerReady}
-              onPreloadReady={(vid) => reportPreloadReady?.(vid)} 
-            />
+            <VideoPlayer videoId={videoId} nextVideoId={nextVideoId} videoTitle={videoTitle} videoThumbnail={videoThumbnail} isHost={isHost} isPlaying={isPlaying} isSynced={isSynced} onPlay={handlePlay} onPause={handlePause} onPlayerReady={handlePlayerReady} onPreloadReady={(vid) => reportPreloadReady?.(vid)} />
           </motion.div>
 
           {isHost && videoId && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center justify-center gap-4 mb-4">
-              <Button variant="outline" size="sm" onClick={playPrevious} disabled={!hasPrevious}>
-                <SkipBack className="w-4 h-4 mr-1" /> Previous
-              </Button>
-              <Button variant="outline" size="sm" onClick={playNext} disabled={!hasNext}>
-                Next <SkipForward className="w-4 h-4 ml-1" />
-              </Button>
+              <Button variant="outline" size="sm" onClick={playPrevious} disabled={!hasPrevious}><SkipBack className="w-4 h-4 mr-1" /> Previous</Button>
+              <Button variant="outline" size="sm" onClick={playNext} disabled={!hasNext}>Next <SkipForward className="w-4 h-4 ml-1" /></Button>
             </motion.div>
           )}
 
@@ -321,9 +246,7 @@ const Room = () => {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-8">
               <div className="inline-flex items-center gap-3 px-6 py-4 rounded-xl glass">
                 <div className="w-3 h-3 rounded-full bg-primary animate-pulse" />
-                <span className="text-muted-foreground">
-                  {!hasSeenHost ? "Validating room code and finding Host..." : "Waiting for host to select a video..."}
-                </span>
+                <span className="text-muted-foreground">{!hasSeenHost ? "Validating room code and finding Host..." : "Waiting for host to select a video..."}</span>
               </div>
             </motion.div>
           )}
