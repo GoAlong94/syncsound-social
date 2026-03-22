@@ -93,74 +93,83 @@ export const DeviceDashboard = ({
           </TableHeader>
           <TableBody>
             {sortedDevices.map((device, index) => (
-              <TableRow key={device.id} className="text-xs">
-                <TableCell className="py-2">
-                  <div className="flex items-center gap-2">
-                    {device.isHost && (
-                      <Crown className="w-3 h-3 text-sync-warning" />
-                    )}
-                    <span className="font-medium">
-                      {device.id === currentUserId
-                        ? 'You'
-                        : device.isHost
-                        ? 'Host'
-                        : `Device ${index + 1}`}
-                    </span>
-                  </div>
-                </TableCell>
-                <TableCell className="py-2">
-                  <span className="flex items-center gap-1">
-                    {getOsIcon(device.os)} {device.os}
-                  </span>
-                </TableCell>
-                <TableCell className="py-2">
-                  <span className="flex items-center gap-1">
-                    {getBrowserIcon(device.browser)} {device.browser}
-                  </span>
-                </TableCell>
-                <TableCell className="py-2 text-right">
-                  {device.isHost ? '—' : `${device.latency}ms`}
-                </TableCell>
-                <TableCell className="py-2">
-                  <div className="flex items-center justify-center gap-1.5">
-                    <div
-                      className={`w-2 h-2 rounded-full ${getSyncStatusDot(
-                        device.syncStatus,
-                        device.lastSyncDelta
-                      )}`}
-                    />
-                    <span
-                      className={getSyncStatusColor(
-                        device.syncStatus,
-                        device.lastSyncDelta
+              (() => {
+                const OsIcon = getOsIcon(device.os);
+                const BrowserIcon = getBrowserIcon(device.browser);
+
+                return (
+                  <TableRow key={device.id} className="text-xs">
+                    <TableCell className="py-2">
+                      <div className="flex items-center gap-2">
+                        {device.isHost && (
+                          <Crown className="w-3 h-3 text-sync-warning" />
+                        )}
+                        <span className="font-medium">
+                          {device.id === currentUserId
+                            ? 'You'
+                            : device.isHost
+                            ? 'Host'
+                            : `Device ${index + 1}`}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="py-2">
+                      <span className="flex items-center gap-1">
+                        <OsIcon className="w-3.5 h-3.5" />
+                        {device.os}
+                      </span>
+                    </TableCell>
+                    <TableCell className="py-2">
+                      <span className="flex items-center gap-1">
+                        <BrowserIcon className="w-3.5 h-3.5" />
+                        {device.browser}
+                      </span>
+                    </TableCell>
+                    <TableCell className="py-2 text-right">
+                      {device.isHost ? '—' : `${device.latency}ms`}
+                    </TableCell>
+                    <TableCell className="py-2">
+                      <div className="flex items-center justify-center gap-1.5">
+                        <div
+                          className={`w-2 h-2 rounded-full ${getSyncStatusDot(
+                            device.syncStatus,
+                            device.lastSyncDelta
+                          )}`}
+                        />
+                        <span
+                          className={getSyncStatusColor(
+                            device.syncStatus,
+                            device.lastSyncDelta
+                          )}
+                        >
+                          {device.isHost
+                            ? 'Host'
+                            : device.syncStatus === 'synced'
+                            ? 'Synced'
+                            : device.syncStatus === 'syncing'
+                            ? 'Syncing'
+                            : 'Unsynced'}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="py-2 text-right">
+                      {device.isHost ? (
+                        '—'
+                      ) : (
+                        <span
+                          className={getSyncStatusColor(
+                            device.syncStatus,
+                            device.lastSyncDelta
+                          )}
+                        >
+                          {device.lastSyncDelta >= 0 ? '+' : ''}
+                          {device.lastSyncDelta}ms
+                        </span>
                       )}
-                    >
-                      {device.isHost
-                        ? 'Host'
-                        : device.syncStatus === 'synced'
-                        ? 'Synced'
-                        : device.syncStatus === 'syncing'
-                        ? 'Syncing'
-                        : 'Unsynced'}
-                    </span>
-                  </div>
-                </TableCell>
-                <TableCell className="py-2 text-right">
-                  {device.isHost ? (
-                    '—'
-                  ) : (
-                    <span
-                      className={getSyncStatusColor(
-                        device.syncStatus,
-                        device.lastSyncDelta
-                      )}
-                    >
-                      {device.lastSyncDelta >= 0 ? '+' : ''}
-                      {device.lastSyncDelta}ms
-                    </span>
-                  )}
-                </TableCell>
-              </TableRow>
+                    </TableCell>
+                  </TableRow>
+                );
+              })()
             ))}
           </TableBody>
         </Table>

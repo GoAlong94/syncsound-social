@@ -51,6 +51,8 @@ export const JoinerStatusCard = ({
 }: JoinerStatusCardProps) => {
   const statusInfo = getStatusInfo(syncStatus, lastSyncDelta);
   const StatusIcon = statusInfo.icon;
+  const OsIcon = getOsIcon(os);
+  const BrowserIcon = getBrowserIcon(browser);
 
   return (
     <motion.div
@@ -75,11 +77,11 @@ export const JoinerStatusCard = ({
         {/* Device Info */}
         <div className="space-y-2">
           <div className="flex items-center gap-2 text-sm">
-            <span>{getOsIcon(os)}</span>
+            <OsIcon className="w-4 h-4 text-muted-foreground" />
             <span className="text-muted-foreground">{os}</span>
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <span>{getBrowserIcon(browser)}</span>
+            <BrowserIcon className="w-4 h-4 text-muted-foreground" />
             <span className="text-muted-foreground">{browser}</span>
           </div>
         </div>
